@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "paperscout"
+version = "0.3.0"
+description = "Journal metadata fetcher with strict filtering, login-based abstract fallback, and a small Streamlit UI."
+authors = ["You <you@example.com>"]
+readme = "README.md"
+packages = [{ include = "paperscout", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+httpx = "^0.27.0"
+pydantic = "^2.8.2"
+pandas = "^2.2.2"
+openpyxl = "^3.1.5"
+typer = {extras = ["all"], version = "^0.12.3"}
+tenacity = "^9.0.0"
+loguru = "^0.7.2"
+python-dotenv = "^1.0.1"
+beautifulsoup4 = "^4.12.3"
+lxml = "^5.2.1"
+click = "8.1.7"
+rich = "13.7.1"
+playwright = "1.47.0"
+streamlit = "^1.37.0"
+pyarrow = "<17"
+
+[tool.poetry.scripts]
+paperscout = "paperscout.cli:app"
+paperscout-ui = "paperscout.ui:run"
