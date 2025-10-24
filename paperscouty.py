@@ -55,7 +55,7 @@ def setup_smtp_from_secrets_or_env():
     setdef("EMAIL_FROM")
     setdef("EMAIL_USER")
     setdef("EMAIL_PASSWORD")
-    setdef("EMAIL_SENDER_NAME", "paperscout")
+    setdef("EMAIL_SENDER_NAME", "Paperscout Journal Service")
 
 # Aufruf früh im Skript lassen:
 setup_smtp_from_secrets_or_env()
