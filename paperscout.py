@@ -131,6 +131,11 @@ def fetch_html(url: str, timeout: float = 25.0) -> Optional[str]:
                 r = c.get(url, headers=_headers({"Referer": "https://econtent.hogrefe.com/"}))
             if r.status_code == 403 and "psycnet.apa.org" in url:
                 r = c.get(url, headers=_headers({"Referer": "https://psycnet.apa.org/"}))
+            if r.status_code == 403 and "econtent.hogrefe.com" in url:
+                r = c.get(url, headers=_headers({"Referer": "https://econtent.hogrefe.com/"}))
+            if r.status_code == 403 and "psycnet.apa.org" in url:
+                r = c.get(url, headers=_headers({"Referer": "https://psycnet.apa.org/"}))
+
 
             r.raise_for_status()
             return r.text or ""
@@ -357,41 +362,53 @@ def _dedupe_keep_order(urls: List[str]) -> List[str]:
 
 def _links_sciencedirect_issue(html_text: str) -> List[str]:
     # klassische Links
-    pii_list = re.findall(r'/pii/(S\d{16,})', html_text, flags=re.I)
-    # JSON-Embedding, z.B. ..."pii":"S1234567890123456"...
-    pii_list += re.findall(r'"pii"\s*:\s*"(S\d{16,})"', html_text, flags=re.I)
-    # Datattribute wie data-pii="S..."
-    pii_list += re.findall(r'data-pii=["\'](S\d{16,})["\']', html_text, flags=re.I)
+    hrefs = re.findall(
+        r'href=["\'](?:https?:\/\/www\.sciencedirect\.com)?(\/science\/article\/pii\/([A-Z0-9]{17}))["\']',
+        html_text, flags=re.I
+    )
+    piis = [p for _, p in hrefs]
 
-    pii_list = _dedupe_keep_order(pii_list)
-    return [f"https://www.sciencedirect.com/science/article/pii/{p}" for p in pii_list]
+    # JSON-Embedding: ..."pii":"S12345678901234567"...
+    piis += re.findall(r'"pii"\s*:\s*"(S\d{16,})"', html_text, flags=re.I)
 
+    # data-pii="S..."
+    piis += re.findall(r'data-pii=["\'](S\d{16,})["\']', html_text, flags=re.I)
 
+    piis = _dedupe_keep_order(piis)
+    return [f"https://www.sciencedirect.com/science/article/pii/{p}" for p in piis]
+    
 def _pick_latest_sciencedirect_issue(issues_html: str, journal_slug: str) -> Optional[str]:
-    # klassisches vol/issue-Muster
-    m = re.findall(rf'href=["\'](\/journal\/{journal_slug}\/vol\/(\d+)\/issue\/(\d+))["\']', issues_html, flags=re.I)
+    m = re.findall(
+        rf'href=["\'](\/journal\/{journal_slug}\/vol\/(\d+)\/issue\/(\d+))["\']',
+        issues_html, flags=re.I
+    )
     if m:
         tuples = [(int(v), int(i), p) for (p, v, i) in m]
         tuples.sort(reverse=True)
         return "https://www.sciencedirect.com" + tuples[0][2]
-    # Fallbacks: latest / articles-in-press
-    for path in (f"/journal/{journal_slug}/latest", f"/journal/{journal_slug}/articles-in-press"):
-        if path.lower() in issues_html.lower():
+
+    # Neu: Fallbacks erkennen
+    for path in (
+        f"/journal/{journal_slug}/latest",
+        f"/journal/{journal_slug}/articles-in-press",
+    ):
+        if re.search(re.escape(path), issues_html, flags=re.I):
             return "https://www.sciencedirect.com" + path
-    # finaler Fallback:
+
     return f"https://www.sciencedirect.com/journal/{journal_slug}/latest"
+
 
 def _links_sage_toc(html_text: str) -> List[str]:
     hrefs = re.findall(r'href=["\'](\/doi\/(?:full|abs|epub)\/[^"\']+)["\']', html_text, flags=re.I)
     hrefs += re.findall(r'"href"\s*:\s*"(\/doi\/(?:full|abs|epub)\/[^"]+)"', html_text, flags=re.I)
-    hrefs = [h.replace("/abs/","/full/") for h in hrefs]
-    return ["https://journals.sagepub.com"+h for h in _dedupe_keep_order(hrefs)]
+    hrefs = [h.replace("/abs/", "/full/") for h in hrefs]
+    return ["https://journals.sagepub.com" + h for h in _dedupe_keep_order(hrefs)]
 
 def _links_wiley_toc(html_text: str) -> List[str]:
     hrefs = re.findall(r'href=["\'](\/doi\/(?:full|abs)\/[^"\']+)["\']', html_text, flags=re.I)
     hrefs += re.findall(r'"href"\s*:\s*"(\/doi\/(?:full|abs)\/[^"]+)"', html_text, flags=re.I)
-    hrefs = [h.replace("/abs/","/full/") for h in hrefs]
-    return ["https://onlinelibrary.wiley.com"+h for h in _dedupe_keep_order(hrefs)]
+    hrefs = [h.replace("/abs/", "/full/") for h in hrefs]
+    return ["https://onlinelibrary.wiley.com" + h for h in _dedupe_keep_order(hrefs)]
 
 
 def _links_informs_toc(html_text: str) -> List[str]:
@@ -1033,10 +1050,28 @@ if run:
         for i, j in enumerate(chosen, 1):
             st.write(f"Quelle: {j}")
             rows_j = collect_all(j, s_since, s_until, int(rows), ai_model)
+        
+            # 🔎 Debug: TOC-Index anzeigen (nur wenn TOC-Filter aktiv)
+            if debug and st.session_state.get("only_current_issue"):
+                idx = _build_current_issue_index(j)
+                st.caption(
+                    f"TOC-Index {j}: DOIs={len(idx['dois'])}, "
+                    f"PIIs={len(idx['piis'])}, URLs={len(idx['urls'])}"
+                )
+            if debug and st.session_state.get("only_current_issue"):
+                st.caption(f"→ Nach Filter: {len(rows_j)} Treffer aus aktuellem Heft")
 
+        
             # Optionaler TOC-Filter nach der Auswahl
             if st.session_state.get("only_current_issue"):
                 rows_j = filter_to_current_issue(rows_j, j)
+        
+            # Dedup und aufsammeln
+            rows_j = dedup(rows_j)
+            all_rows.extend(rows_j)
+        
+            progress.progress(min(i / max(n, 1), 1.0))
+
 
             # Dedup und aufsammeln
             rows_j = dedup(rows_j)
