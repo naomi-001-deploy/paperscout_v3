@@ -127,6 +127,11 @@ def fetch_html(url: str, timeout: float = 25.0) -> Optional[str]:
                 r = c.get(url, headers=_headers({"Referer": "https://www.sciencedirect.com/"}))
             if r.status_code == 403 and "journals.aom.org" in url:
                 r = c.get(url, headers=_headers({"Referer": "https://journals.aom.org/"}))
+            if r.status_code == 403 and "econtent.hogrefe.com" in url:
+                r = c.get(url, headers=_headers({"Referer": "https://econtent.hogrefe.com/"}))
+            if r.status_code == 403 and "psycnet.apa.org" in url:
+                r = c.get(url, headers=_headers({"Referer": "https://psycnet.apa.org/"}))
+
             r.raise_for_status()
             return r.text or ""
     except Exception:
@@ -351,26 +356,43 @@ def _dedupe_keep_order(urls: List[str]) -> List[str]:
     return out
 
 def _links_sciencedirect_issue(html_text: str) -> List[str]:
-    hrefs = re.findall(r'href=["\'](?:https?:\/\/www\.sciencedirect\.com)?(\/science\/article\/pii\/[A-Z0-9]+)["\']', html_text, flags=re.I)
-    return ["https://www.sciencedirect.com"+h for h in _dedupe_keep_order(hrefs)]
+    # klassische Links
+    pii_list = re.findall(r'/pii/(S\d{16,})', html_text, flags=re.I)
+    # JSON-Embedding, z.B. ..."pii":"S1234567890123456"...
+    pii_list += re.findall(r'"pii"\s*:\s*"(S\d{16,})"', html_text, flags=re.I)
+    # Datattribute wie data-pii="S..."
+    pii_list += re.findall(r'data-pii=["\'](S\d{16,})["\']', html_text, flags=re.I)
+
+    pii_list = _dedupe_keep_order(pii_list)
+    return [f"https://www.sciencedirect.com/science/article/pii/{p}" for p in pii_list]
+
 
 def _pick_latest_sciencedirect_issue(issues_html: str, journal_slug: str) -> Optional[str]:
+    # klassisches vol/issue-Muster
     m = re.findall(rf'href=["\'](\/journal\/{journal_slug}\/vol\/(\d+)\/issue\/(\d+))["\']', issues_html, flags=re.I)
-    if not m:  # Fallback auf /latest
-        return f"https://www.sciencedirect.com/journal/{journal_slug}/latest"
-    tuples = [(int(v), int(i), p) for (p, v, i) in m]
-    tuples.sort(reverse=True)
-    return "https://www.sciencedirect.com" + tuples[0][2]
+    if m:
+        tuples = [(int(v), int(i), p) for (p, v, i) in m]
+        tuples.sort(reverse=True)
+        return "https://www.sciencedirect.com" + tuples[0][2]
+    # Fallbacks: latest / articles-in-press
+    for path in (f"/journal/{journal_slug}/latest", f"/journal/{journal_slug}/articles-in-press"):
+        if path.lower() in issues_html.lower():
+            return "https://www.sciencedirect.com" + path
+    # finaler Fallback:
+    return f"https://www.sciencedirect.com/journal/{journal_slug}/latest"
 
 def _links_sage_toc(html_text: str) -> List[str]:
     hrefs = re.findall(r'href=["\'](\/doi\/(?:full|abs|epub)\/[^"\']+)["\']', html_text, flags=re.I)
+    hrefs += re.findall(r'"href"\s*:\s*"(\/doi\/(?:full|abs|epub)\/[^"]+)"', html_text, flags=re.I)
     hrefs = [h.replace("/abs/","/full/") for h in hrefs]
     return ["https://journals.sagepub.com"+h for h in _dedupe_keep_order(hrefs)]
 
 def _links_wiley_toc(html_text: str) -> List[str]:
     hrefs = re.findall(r'href=["\'](\/doi\/(?:full|abs)\/[^"\']+)["\']', html_text, flags=re.I)
+    hrefs += re.findall(r'"href"\s*:\s*"(\/doi\/(?:full|abs)\/[^"]+)"', html_text, flags=re.I)
     hrefs = [h.replace("/abs/","/full/") for h in hrefs]
     return ["https://onlinelibrary.wiley.com"+h for h in _dedupe_keep_order(hrefs)]
+
 
 def _links_informs_toc(html_text: str) -> List[str]:
     hrefs = re.findall(r'href=["\'](\/doi\/(?:full|abs)\/[^"\']+)["\']', html_text, flags=re.I)
