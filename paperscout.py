@@ -850,36 +850,36 @@ def filter_to_current_issue(records: List[Dict[str, Any]], journal_name: str) ->
 # =========================
 # E-Mail Versand (SMTP)
 # =========================
-def send_doi_email(to_email: str, dois: List[str]) -> tuple[bool, str]:
-    """Sendet eine einfache Textmail mit DOI-Liste via SMTP. Konfiguration über ENV:
-    EMAIL_HOST, EMAIL_PORT, EMAIL_USER, EMAIL_PASSWORD, EMAIL_FROM, EMAIL_SENDER_NAME (optional),
-    EMAIL_USE_TLS (default True), EMAIL_USE_SSL (False).
-    """
+def send_doi_email(to_email: str, dois: List[str], sender_display: Optional[str] = None) -> tuple[bool, str]:
+    """Sendet eine Textmail mit DOI-Liste. 'sender_display' überschreibt den Anzeigenamen im From-Feld."""
     host = os.getenv("EMAIL_HOST")
     port = int(os.getenv("EMAIL_PORT", "587"))
     user = os.getenv("EMAIL_USER")
     password = os.getenv("EMAIL_PASSWORD")
-    sender = os.getenv("EMAIL_FROM") or user
-    sender_name = os.getenv("EMAIL_SENDER_NAME", "paperscout")
+    sender_addr = os.getenv("EMAIL_FROM") or user
+    default_name = os.getenv("EMAIL_SENDER_NAME", "paperscout")
     use_tls = os.getenv("EMAIL_USE_TLS", "true").lower() in ("1","true","yes","y")
     use_ssl = os.getenv("EMAIL_USE_SSL", "false").lower() in ("1","true","yes","y")
 
-    if not (host and port and sender and user and password):
+    if not (host and port and sender_addr and user and password):
         return False, "SMTP nicht konfiguriert (EMAIL_HOST/PORT/USER/PASSWORD/EMAIL_FROM)."
+
+    display_name = (sender_display or "").strip() or default_name
 
     body_lines = [
         "Hallo,",
         "",
-        "hier ist die Liste der ausgewählten DOIs:",
+        f"ausgewählt von: {display_name}",
         "",
+        "Hier ist die Liste der ausgewählten DOIs:",
         *[f"- {d if d.startswith('10.') else d}" for d in dois],
         "",
         "Viele Grüße",
-        sender_name,
+        display_name,
     ]
     msg = MIMEText("\n".join(body_lines), _charset="utf-8")
-    msg["Subject"] = f"[paperscout] {len(dois)} DOI(s)"
-    msg["From"] = formataddr((sender_name, sender))
+    msg["Subject"] = f"[paperscout] {len(dois)} DOI(s) — {display_name}"
+    msg["From"] = formataddr((display_name, sender_addr))
     msg["To"] = to_email
 
     try:
@@ -1207,6 +1207,26 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
 
     # --- E-Mail Versand ---
     st.markdown("### 📧 DOI-Liste per E-Mail senden")
+    sender_display = st.text_input(
+        "Absendername (wird in der E-Mail angezeigt)",
+        value="",
+        placeholder="z. B. Naomi oder Ralf"
+    )
+    
+    to_email = st.text_input("Empfänger-E-Mail-Adresse", key="doi_email_to")
+    
+    if st.button("DOI-Liste senden"):
+        if not st.session_state["selected_dois"]:
+            st.warning("Bitte wähle mindestens eine DOI aus.")
+        elif not to_email or "@" not in to_email:
+            st.warning("Bitte gib eine gültige E-Mail-Adresse ein.")
+        else:
+            ok, msg = send_doi_email(
+                to_email,
+                sorted(st.session_state["selected_dois"]),
+                sender_display=sender_display.strip() or None
+            )
+            st.success(msg) if ok else st.error(msg)
     to_email = st.text_input("E-Mail-Adresse", key="doi_email_to")
     if st.button("DOI-Liste senden"):
         if not st.session_state["selected_dois"]:
