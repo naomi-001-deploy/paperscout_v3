@@ -473,39 +473,45 @@ def _links_apa_toc(html_text: str) -> List[str]:
     return _dedupe_keep_order(hrefs)
 
 def _fetch_current_issue_links(journal_name: str) -> List[str]:
+    """Gibt alle Artikel-Links der aktuellen Ausgabe zurück (TOC/Issues-Seite je Publisher)."""
     cfg = JOURNAL_REGISTRY.get(journal_name)
     if not cfg:
         return []
-    pub = cfg["publisher"]
+
+    pub = cfg.get("publisher", "")
 
     def _debug(msg: str):
         if st.session_state.get("debug_mode"):
             st.info(f"[TOC/{journal_name}] {msg}")
 
+    links: List[str] = []
+
     if pub == "sciencedirect":
-        issues_url = cfg["issues"]
+        issues_url = cfg.get("issues")
+        if not issues_url:
+            _debug("Keine 'issues'-URL in der Registry gefunden.")
+            return []
         issues_html = fetch_html(issues_url)
         if not issues_html:
             _debug(f"Kein Zugriff auf Issues-Seite: {issues_url}")
             return []
-        issue_url = _pick_latest_sciencedirect_issue(issues_html, cfg["journal_slug"])
+        issue_url = _pick_latest_sciencedirect_issue(issues_html, cfg.get("journal_slug", ""))
         toc_html = fetch_html(issue_url) if issue_url else None
         if not toc_html:
             _debug(f"Kein Zugriff auf TOC: {issue_url}")
             return []
         links = _links_sciencedirect_issue(toc_html)
+
     else:
-        toc_url = cfg["toc"]
+        toc_url = cfg.get("toc")
+        if not toc_url:
+            _debug("Keine 'toc'-URL in der Registry gefunden.")
+            return []
         toc_html = fetch_html(toc_url)
         if not toc_html:
             _debug(f"Kein Zugriff auf TOC: {toc_url}")
             return []
-        links = _links_sciencedirect_issue(toc_html)
-    else:
-        toc_url = cfg["toc"]
-        toc_html = fetch_html(toc_url)
-        if not toc_html:
-            return []
+
         if pub == "sage":
             links = _links_sage_toc(toc_html)
         elif pub == "wiley":
@@ -519,10 +525,14 @@ def _fetch_current_issue_links(journal_name: str) -> List[str]:
         elif pub == "apa":
             links = _links_apa_toc(toc_html)
         else:
+            _debug(f"Unbekannter Publisher-Typ: '{pub}'")
             links = []
+
     if not links:
         _debug("Es wurden keine Artikel-Links im TOC gefunden.")
+
     return links
+
 
 # -------------------------
 # Crossref / Semantic Scholar / OpenAlex / OpenAI
