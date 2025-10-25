@@ -117,30 +117,34 @@ def _headers(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
 
 def fetch_html(url: str, timeout: float = 25.0) -> Optional[str]:
     try:
-        with httpx.Client(timeout=timeout, headers=_headers(), follow_redirects=True) as c:
+        base_headers = _headers({
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Upgrade-Insecure-Requests": "1",
+        })
+        with httpx.Client(timeout=timeout, headers=base_headers, follow_redirects=True) as c:
             r = c.get(url)
-            if r.status_code == 403 and "onlinelibrary.wiley.com" in url:
-                r = c.get(url, headers=_headers({"Referer": "https://onlinelibrary.wiley.com/"}))
-            if r.status_code == 403 and "journals.sagepub.com" in url:
-                r = c.get(url, headers=_headers({"Referer": "https://journals.sagepub.com/"}))
-            if r.status_code == 403 and "sciencedirect.com" in url:
-                r = c.get(url, headers=_headers({"Referer": "https://www.sciencedirect.com/"}))
-            if r.status_code == 403 and "journals.aom.org" in url:
-                r = c.get(url, headers=_headers({"Referer": "https://journals.aom.org/"}))
-            if r.status_code == 403 and "econtent.hogrefe.com" in url:
-                r = c.get(url, headers=_headers({"Referer": "https://econtent.hogrefe.com/"}))
-            if r.status_code == 403 and "psycnet.apa.org" in url:
-                r = c.get(url, headers=_headers({"Referer": "https://psycnet.apa.org/"}))
-            if r.status_code == 403 and "econtent.hogrefe.com" in url:
-                r = c.get(url, headers=_headers({"Referer": "https://econtent.hogrefe.com/"}))
-            if r.status_code == 403 and "psycnet.apa.org" in url:
-                r = c.get(url, headers=_headers({"Referer": "https://psycnet.apa.org/"}))
-
-
+            if r.status_code == 403:
+                # Domain-spezifische Referrer erzwingen
+                domain_ref = None
+                if "wiley.com" in url: domain_ref = "https://onlinelibrary.wiley.com/"
+                elif "sagepub.com" in url: domain_ref = "https://journals.sagepub.com/"
+                elif "sciencedirect.com" in url: domain_ref = "https://www.sciencedirect.com/"
+                elif "journals.aom.org" in url: domain_ref = "https://journals.aom.org/"
+                if domain_ref:
+                    r = c.get(url, headers=_headers({"Referer": domain_ref}))
+            if r.status_code in (403, 429):
+                # Retry mit zweitem UA
+                alt = dict(base_headers)
+                alt["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117 Safari/537.36"
+                r = c.get(url, headers=alt)
             r.raise_for_status()
             return r.text or ""
-    except Exception:
+    except Exception as e:
+        if st.session_state.get("debug_mode"):
+            st.error(f"fetch_html fehlgeschlagen @ {url} – {e}")
         return None
+
 
 TAG_STRIP = re.compile(r"<[^>]+>")
 def _clean_text(s: str) -> str:
@@ -469,20 +473,32 @@ def _links_apa_toc(html_text: str) -> List[str]:
     return _dedupe_keep_order(hrefs)
 
 def _fetch_current_issue_links(journal_name: str) -> List[str]:
-    """Gibt alle Artikel-Links der aktuellen Ausgabe zurück."""
     cfg = JOURNAL_REGISTRY.get(journal_name)
     if not cfg:
         return []
     pub = cfg["publisher"]
 
+    def _debug(msg: str):
+        if st.session_state.get("debug_mode"):
+            st.info(f"[TOC/{journal_name}] {msg}")
+
     if pub == "sciencedirect":
         issues_url = cfg["issues"]
         issues_html = fetch_html(issues_url)
         if not issues_html:
+            _debug(f"Kein Zugriff auf Issues-Seite: {issues_url}")
             return []
         issue_url = _pick_latest_sciencedirect_issue(issues_html, cfg["journal_slug"])
         toc_html = fetch_html(issue_url) if issue_url else None
         if not toc_html:
+            _debug(f"Kein Zugriff auf TOC: {issue_url}")
+            return []
+        links = _links_sciencedirect_issue(toc_html)
+    else:
+        toc_url = cfg["toc"]
+        toc_html = fetch_html(toc_url)
+        if not toc_html:
+            _debug(f"Kein Zugriff auf TOC: {toc_url}")
             return []
         links = _links_sciencedirect_issue(toc_html)
     else:
@@ -504,7 +520,8 @@ def _fetch_current_issue_links(journal_name: str) -> List[str]:
             links = _links_apa_toc(toc_html)
         else:
             links = []
-
+    if not links:
+        _debug("Es wurden keine Artikel-Links im TOC gefunden.")
     return links
 
 # -------------------------
@@ -838,32 +855,83 @@ def _canon(u: str) -> str:
 
 def filter_to_current_issue(records: List[Dict[str, Any]], journal_name: str) -> List[Dict[str, Any]]:
     """
-    Strenger TOC-Match:
-    - DOI-Match (bevorzugt)
-    - PII-Match (Elsevier)
-    - URL-Match (kanonisch, /abs -> /full normalisiert)
+    TOC-Match (aktuelles Heft).
+    Versucht DOI-/PII-/URL-Match gegen den TOC-Index.
+    - Fail-OPEN (Standard): Wenn der TOC nicht lesbar ist, werden die Records NICHT gefiltert.
+    - Fail-CLOSED (optional): Wenn st.session_state["strict_toc"] = True und der TOC nicht lesbar ist,
+      werden 0 Ergebnisse geliefert (wie bisher).
     """
-    idx = _build_current_issue_index(journal_name)
-    if not any(idx.values()):
-        return []  # Keine TOC-Daten -> dann fällt der Filter für dieses Journal leer aus
+    # Sicherheit: leere Eingabe
+    if not records:
+        return []
 
-    dois = idx["dois"]
-    piis = idx["piis"]
-    urls = idx["urls"]
+    idx = _build_current_issue_index(journal_name)
+
+    strict = st.session_state.get("strict_toc", False)
+    debug  = st.session_state.get("debug_mode", False)
+
+    # Wenn TOC-Index leer ist → fail-open (Standard) oder fail-closed (strict)
+    if not any(idx.values()):
+        if strict:
+            if debug:
+                st.error(f"TOC nicht lesbar – strenger Filter aktiv → 0 Ergebnisse für „{journal_name}“.")
+            return []
+        else:
+            if debug:
+                st.warning(f"TOC für „{journal_name}“ nicht lesbar – Filter übersprungen (fail-open).")
+            return records
+
+    dois: set = idx["dois"]
+    piis: set = idx["piis"]
+    urls: set = idx["urls"]
 
     out: List[Dict[str, Any]] = []
     for r in records:
         url_raw = r.get("url", "") or ""
         doi_raw = r.get("doi", "") or ""
 
-        # Normalize
+        # Normalisieren
+        url = _norm_url(url_raw)
+        doi = _norm_doi(doi_raw)
+        url_norm = url.replace("/abs/", "/full/")
+        pii = _extract_pii(url) or _extract_pii(doi)
+
+        keep = (
+            (doi and doi in dois)
+            or (pii and pii in piis)
+            or (url_norm in urls or url in urls)
+        )
+
+        if keep:
+            out.append(r)
+
+    if debug:
+        st.info(
+            f"[TOC-Filter] „{journal_name}“: "
+            f"{len(out)}/{len(records)} Einträge behalten "
+            f"(DOIs:{len(dois)} PIIs:{len(piis)} URLs:{len(urls)})"
+        )
+
+    return out
+
+
+    dois: set = idx["dois"]
+    piis: set = idx["piis"]
+    urls: set = idx["urls"]
+
+    out: List[Dict[str, Any]] = []
+    for r in records:
+        url_raw = r.get("url", "") or ""
+        doi_raw = r.get("doi", "") or ""
+
+        # Normalisieren
         url = _norm_url(url_raw)
         doi = _norm_doi(doi_raw)
 
-        # Wiley/SAGE/INFORMS/AOM: /abs/ -> /full/ angleichen
+        # Wiley/SAGE/INFORMS/AOM: /abs/ -> /full/
         url_norm = url.replace("/abs/", "/full/")
 
-        # ScienceDirect: PII aus Record-URL oder ggf. DOI/HTML
+        # ScienceDirect: PII aus URL oder ggf. DOI/HTML (zweiterer wird in _build_current_issue_index schon versucht)
         pii = _extract_pii(url) or _extract_pii(doi)
 
         keep = False
@@ -876,13 +944,20 @@ def filter_to_current_issue(records: List[Dict[str, Any]], journal_name: str) ->
         if not keep and pii and pii in piis:
             keep = True
 
-        # 3) URL-Match
-        if not keep:
-            if url_norm in urls or url in urls:
-                keep = True
+        # 3) URL-Match (kanonische URL)
+        if not keep and (url_norm in urls or url in urls):
+            keep = True
 
         if keep:
             out.append(r)
+
+    # Optionales Debug
+    if debug:
+        st.info(
+            f"[TOC-Filter] „{journal_name}“: "
+            f"{len(out)}/{len(records)} Einträge behalten "
+            f"(DOIs:{len(dois)} PIIs:{len(piis)} URLs:{len(urls)})"
+        )
 
     return out
 
@@ -994,7 +1069,9 @@ with col2:
     today = date.today()
     since = st.date_input("Seit (inkl.)", value=date(today.year, 1, 1))
     only_current_issue = st.checkbox("Nur aktuelles Heft (TOC-Filter)", value=False)
+    strict_toc = st.checkbox("Strenger TOC-Filter (fail-closed, riskant online)", value=False)
     st.session_state["only_current_issue"] = only_current_issue
+    st.session_state["strict_toc"] = strict_toc
     until = st.date_input("Bis (inkl.)", value=today)
 
     # 🔁 NEU: „letzte 30 Tage“
