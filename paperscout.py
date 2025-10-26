@@ -836,7 +836,34 @@ if run:
 # --- NEUE ERGEBNISANZEIGE (v2) ---
 # ================================
 st.divider()
+
+# --- NEU: Anker für "Hoch" ---
+st.markdown("<a id='results_top'></a>", unsafe_allow_html=True) 
+
 st.subheader("📚 Ergebnisse")
+
+# --- NEU: Link für "Runter" ---
+# Kleiner CSS-Hack, um den Link rechtsbündig über den Buttons zu platzieren
+st.markdown(
+    """
+    <style>
+        .link-container {
+            text-align: right;
+            margin-top: -2.5rem; 
+            margin-bottom: 1rem;
+        }
+        .link-container a {
+            text-decoration: none;
+            font-size: 0.9rem;
+        }
+    </style>
+    <div class="link-container">
+        <a href='#actions_bottom'>⬇️ Zum E-Mail Versand springen</a>
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
+
 
 # --- KORREKTUR 1 (Sync-Fix): Angepasste Callback-Funktion ---
 def toggle_doi(doi, key):
@@ -994,6 +1021,29 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             st.markdown(card_html, unsafe_allow_html=True)
             
     st.divider()
+    # --- NEU: Link "Hoch" und Anker "Unten" ---
+    # Wir nutzen den gleichen CSS-Hack, nur mit angepassten Rändern
+    st.markdown(
+        """
+        <style>
+            .link-container-bottom {
+                text-align: right;
+                margin-bottom: -1.5rem;
+            }
+            .link-container-bottom a {
+                text-decoration: none;
+                font-size: 0.9rem;
+            }
+        </style>
+        <div class="link-container-bottom">
+            <a href='#results_top'>⬆️ Zum Anfang der Liste springen</a>
+        </div>
+        """, 
+        unsafe_allow_html=True
+    )
+    # Der Anker, zu dem der "Runter"-Link springt
+    st.markdown("<a id='actions_bottom'></a>", unsafe_allow_html=True)
+    # --- ENDE NEU ---
 
     # --- Download & E-Mail (neu gruppiert) ---
     st.subheader("🏁 Aktionen: Download & Versand")
