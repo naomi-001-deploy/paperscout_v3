@@ -1018,8 +1018,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
                 '</details>'
                 '</div>'
             )
-            st.markdown(card_html, unsafe_allow_html=True)
-            
+            st.markdown(card_html, unsafe_allow_html=True)        
     st.divider()
 
     # --- NEU: Link "Hoch" und Anker "Unten" ---
