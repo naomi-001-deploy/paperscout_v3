@@ -524,4 +524,561 @@ def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) 
                 if abs_simple:
                     rec["abstract"] = abs_simple
 
-        if not rec
+        if not rec.get("abstract") and rec.get("url"):
+            html_text = fetch_html(rec["url"])
+            if html_text:
+                ai = ai_extract_metadata_from_html(html_text, ai_model)
+                if ai:
+                    for k in ["title", "authors", "journal", "issued", "abstract", "doi", "url"]:
+                        if not rec.get(k) and ai.get(k):
+                            rec[k] = ai.get(k)
+
+        out.append(rec)
+
+    for r in out:
+        d = (r.get("doi") or "").strip()
+        if d.startswith("10."):
+            r["doi"] = f"https://doi.org/{d}"
+        elif d.startswith("http://doi.org/"):
+            r["doi"] = "https://" + d[len("http://"):]
+        if not r.get("url"):
+            r["url"] = r.get("doi", "")
+
+    return out
+
+def dedup(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen=set();out=[]
+    for a in items:
+        d=(a.get("doi") or "").lower()
+        if d in seen: continue
+        seen.add(d); out.append(a)
+    return out
+
+# =========================
+# E-Mail Versand (SMTP)
+# =========================
+def send_doi_email(to_email: str, dois: List[str], sender_display: Optional[str] = None) -> tuple[bool, str]:
+    host = os.getenv("EMAIL_HOST")
+    port = int(os.getenv("EMAIL_PORT", "587"))
+    user = os.getenv("EMAIL_USER")
+    password = os.getenv("EMAIL_PASSWORD")
+    sender_addr = os.getenv("EMAIL_FROM") or user
+    default_name = os.getenv("EMAIL_SENDER_NAME", "paperscout")
+    use_tls = os.getenv("EMAIL_USE_TLS", "true").lower() in ("1","true","yes","y")
+    use_ssl = os.getenv("EMAIL_USE_SSL", "false").lower() in ("1,""true","yes","y")
+
+    if not (host and port and sender_addr and user and password):
+        return False, "SMTP nicht konfiguriert (EMAIL_HOST/PORT/USER/PASSWORD/EMAIL_FROM)."
+
+    display_name = (sender_display or "").strip() or default_name
+
+    body_lines = [
+        "Hallo,",
+        "",
+        f"ausgewählt von: {display_name}",
+        "",
+        "Hier ist die Liste der ausgewählten DOIs:",
+        *[f"- {d if d.startswith('10.') else d}" for d in dois],
+        "",
+        "Viele Grüße",
+        display_name,
+    ]
+    msg = MIMEText("\n".join(body_lines), _charset="utf-8")
+    msg["Subject"] = f"[paperscout] {len(dois)} DOI(s) — {display_name}"
+    msg["From"] = formataddr((display_name, sender_addr))
+    msg["To"] = to_email
+
+    try:
+        if use_ssl:
+            context = ssl.create_default_context()
+            with smtplib.SMTP_SSL(host, port, context=context) as server:
+                server.login(user, password)
+                server.sendmail(sender_addr, [to_email], msg.as_string())
+        else:
+            with smtplib.SMTP(host, port) as server:
+                server.ehlo()
+                if use_tls:
+                    server.starttls(context=ssl.create_default_context())
+                    server.ehlo()
+                server.login(user, password)
+                server.sendmail(sender_addr, [to_email], msg.as_string())
+
+        return True, "E-Mail gesendet."
+    except Exception as e:
+        return False, f"E-Mail Versand fehlgeschlagen: {e}"
+
+# =========================
+# =========================
+# NEUE UI (v3) - JETZT MIT DARK MODE
+# =========================
+# =========================
+st.title("🕵🏻 paperscout – Journal Service")
+
+# Init Session State für Auswahl
+if "selected_dois" not in st.session_state:
+    st.session_state["selected_dois"] = set()
+
+# --- KORREKTUR: CSS-Block (v3) für Dark Mode ---
+# Verwendet jetzt Streamlit CSS-Variablen für dynamische Farben
+CARD_STYLE_V3 = """
+<style>
+    /*
+    NEUE THEME-AWARE KARTEN (v3)
+    Verwendet Streamlit CSS-Variablen, um sich an Light/Dark-Mode anzupassen.
+    */
+    .result-card {
+        /* Nimmt die "Hintergrundfarbe für Container" (hellgrau/dunkelgrau) */
+        background-color: var(--secondary-background-color); 
+        border: 1px solid var(--secondary-background-color); /* Rand in gleicher Farbe */
+        border-left: 6px solid var(--primary-color); /* Akzentfarbe (z.B. blau) */
+        border-radius: 8px;
+        padding: 1.1rem;
+        margin-bottom: 1rem;
+        /* Subtiler Schatten, der auf beiden Modi funktioniert */
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05); 
+        transition: all 0.2s ease-in-out;
+    }
+    .result-card:hover {
+        /* Heller/dunkler als der Hintergrund, je nach Modus */
+        background-color: var(--background-color); 
+        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        transform: translateY(-2px);
+    }
+    .result-card h3 {
+        color: var(--text-color); /* Passt sich an (schwarz/weiß) */
+        margin-top: 0;
+        margin-bottom: 0.25rem;
+    }
+    .result-card .meta {
+        color: var(--secondary-text-color); /* Passt sich an (grau) */
+        font-size: 0.9rem;
+        margin-bottom: 0.75rem;
+    }
+    .result-card .authors {
+        color: var(--text-color); /* Passt sich an (schwarz/weiß) */
+        font-size: 0.95rem;
+        font-weight: 500;
+    }
+    .result-card details {
+        margin-top: 1rem;
+    }
+    .result-card details summary {
+        cursor: pointer;
+        font-weight: bold;
+        color: var(--primary-color); /* Nutzt die Akzentfarbe des Themes */
+        font-size: 0.95rem;
+        list-style-type: '➕ ';
+    }
+    .result-card details[open] summary {
+        list-style-type: '➖ ';
+    }
+    .result-card details > div {
+        /* Nimmt die Haupt-Hintergrundfarbe (weiß/sehr dunkelgrau) */
+        background-color: var(--background-color); 
+        border-radius: 5px;
+        padding: 0.75rem 1rem;
+        margin-top: 0.5rem;
+        /* Rand ist jetzt die "normale" Randfarbe */
+        border: 1px solid var(--border-color, var(--gray-300)); 
+    }
+    
+    /* Expliziter Fallback für Rand im Dark Mode (falls --border-color nicht gesetzt ist) */
+    html.dark .result-card details > div {
+        border: 1px solid var(--border-color, var(--gray-800));
+    }
+    
+    .result-card details .abstract {
+        color: var(--text-color); /* Passt sich an */
+        white-space: pre-wrap;
+        font-size: 0.9rem;
+        line-height: 1.6;
+    }
+    .result-card details a {
+        color: var(--primary-color); /* Links nutzen auch Akzentfarbe */
+        text-decoration: none;
+    }
+    .result-card details a:hover {
+        text-decoration: underline;
+    }
+</style>
+"""
+st.markdown(CARD_STYLE_V3, unsafe_allow_html=True)
+
+
+# --- Setup-Tabs ---
+tab1, tab2 = st.tabs(["🔍 Schritt 1: Auswahl", "⚙️ Schritt 2: Einstellungen"])
+journals = sorted(JOURNAL_ISSN.keys())
+today = date.today()
+
+with tab1:
+    st.markdown("#### Journals auswählen")
+    
+    def _chk_key(name: str) -> str:
+        return "chk_" + re.sub(r"\W+", "_", name.lower()).strip("_")
+
+    sel_all_col, desel_all_col, _ = st.columns([1, 1, 4])
+    with sel_all_col:
+        select_all_clicked = st.button("Alle **Journals** auswählen", use_container_width=True)
+    with desel_all_col:
+        deselect_all_clicked = st.button("Alle **Journals** abwählen", use_container_width=True)
+
+    if select_all_clicked:
+        for j in journals:
+            st.session_state[_chk_key(j)] = True
+    if deselect_all_clicked:
+        for j in journals:
+            st.session_state[_chk_key(j)] = False
+
+    chosen: List[str] = []
+    cols = st.columns(3)
+    for idx, j in enumerate(journals):
+        k = _chk_key(j)
+        current_val = st.session_state.get(k, False)
+        with cols[idx % 3]:
+            if st.checkbox(j, value=current_val, key=k):
+                chosen.append(j)
+
+    st.markdown(f"**{len(chosen)}** Journal(s) ausgewählt.")
+    st.divider()
+    
+    st.markdown("#### Zeitraum definieren")
+    date_col1, date_col2, date_col3 = st.columns(3)
+    with date_col1:
+        since = st.date_input("Seit (inkl.)", value=date(today.year, 1, 1))
+    with date_col2:
+        until = st.date_input("Bis (inkl.)", value=today)
+    with date_col3:
+        st.markdown("<br>", unsafe_allow_html=True) # Kleiner Layout-Hack für die Höhe
+        last30 = st.checkbox("Nur letzte 30 Tage", value=False)
+        if last30:
+            st.caption(f"Aktiv: {(today - timedelta(days=30)).isoformat()} bis {today.isoformat()}")
+
+with tab2:
+    st.markdown("#### Technische Einstellungen")
+    rows = st.number_input("Max. Treffer pro Journal", min_value=5, max_value=200, step=5, value=50)
+    ai_model = st.text_input("OpenAI Modell (für Abstract-Fallback)", value="gpt-4o-mini")
+    
+    st.markdown("#### API-Keys & E-Mails")
+    api_key_input = st.text_input("🔑 OpenAI API-Key", type="password", value="", help="Optional. Wird für Artikel ohne Abstract benötigt.")
+    if api_key_input:
+        os.environ["PAPERSCOUT_OPENAI_API_KEY"] = api_key_input
+        st.caption("API-Key für diese Sitzung gesetzt.")
+        
+    crossref_mail = st.text_input("📧 Crossref Mailto (empfohlen)", value=os.getenv("CROSSREF_MAILTO", ""), help="Eine E-Mail-Adresse verbessert die Zuverlässigkeit der Crossref-API.")
+    if crossref_mail:
+        os.environ["CROSSREF_MAILTO"] = crossref_mail
+        st.caption("Crossref-Mailto für diese Sitzung gesetzt.")
+
+    st.markdown("#### Netzwerk & Versand")
+    proxy_url = st.text_input("🌐 Proxy (optional)", value=os.getenv("PAPERSCOUT_PROXY", ""), help="Format: http://user:pass@host:port")
+    if proxy_url:
+        st.session_state["proxy_url"] = proxy_url.strip()
+        st.success("Proxy für diese Sitzung aktiv.")
+    else:
+        st.session_state["proxy_url"] = ""
+
+    with st.expander("✉️ E-Mail Versand (Status)", expanded=False):
+        ok = all(os.getenv(k) for k in ["EMAIL_HOST","EMAIL_PORT","EMAIL_USER","EMAIL_PASSWORD","EMAIL_FROM"])
+        if ok:
+            st.success(f"SMTP konfiguriert für: {os.getenv('EMAIL_FROM')}")
+        else:
+            st.error("SMTP nicht vollständig konfiguriert. Bitte Secrets/Env setzen.")
+
+st.divider()
+
+# --- Start-Button ---
+run_col1, run_col2, run_col3 = st.columns([2, 1, 2])
+with run_col2:
+    run = st.button("🚀 Let´s go! Metadaten ziehen", use_container_width=True, type="primary")
+
+if run:
+    if not chosen:
+        st.warning("Bitte mindestens ein Journal in Schritt 1 auswählen.")
+    else:
+        st.info("Starte Abruf — Crossref, Semantic Scholar, OpenAlex, KI-Fallback...")
+
+        all_rows: List[Dict[str, Any]] = []
+        progress = st.progress(0, "Starte...")
+        n = len(chosen)
+
+        if last30:
+            s_since = (today - timedelta(days=30)).isoformat()
+            s_until = today.isoformat()
+        else:
+            s_since, s_until = str(since), str(until)
+
+        for i, j in enumerate(chosen, 1):
+            progress.progress(min(i / max(n, 1), 1.0), f"({i}/{n}) Verarbeite: {j}")
+            rows_j = collect_all(j, s_since, s_until, int(rows), ai_model)
+            rows_j = dedup(rows_j)
+            all_rows.extend(rows_j)
+
+        progress.empty()
+        if not all_rows:
+            st.warning("Keine Treffer im gewählten Zeitraum/Journals gefunden.")
+        else:
+            df = pd.DataFrame(all_rows)
+            cols = [c for c in ["title", "doi", "issued", "journal", "authors", "abstract", "url"] if c in df.columns]
+            if cols:
+                df = df[cols]
+
+            st.session_state["results_df"] = df
+            st.session_state["selected_dois"] = set() # Auswahl zurücksetzen
+            
+            # Alle Checkbox-States löschen/zurücksetzen, falls alte Keys von einem früheren Lauf existieren
+            for key in list(st.session_state.keys()):
+                if key.startswith("sel_card_"):
+                    del st.session_state[key]
+            
+            st.success(f"🎉 {len(df)} Treffer geladen!")
+
+# ================================
+# --- NEUE ERGEBNISANZEIGE (v2) ---
+# ================================
+st.divider()
+st.subheader("📚 Ergebnisse")
+
+# --- KORREKTUR 1 (Sync-Fix): Angepasste Callback-Funktion ---
+def toggle_doi(doi, key):
+    # Diese Funktion wird *nach* dem Klick ausgeführt.
+    # st.session_state[key] enthält jetzt den *neuen* Status.
+    is_checked = st.session_state.get(key, False)
+    if is_checked:
+        st.session_state["selected_dois"].add(doi)
+    else:
+        st.session_state["selected_dois"].discard(doi)
+# --- ENDE KORREKTUR 1 ---
+
+
+if "results_df" in st.session_state and not st.session_state["results_df"].empty:
+    df = st.session_state["results_df"].copy()
+
+    def _to_http(u: str) -> str:
+        if not isinstance(u, str): return ""
+        u = u.strip()
+        if u.startswith("http://doi.org/"): return "https://" + u[len("http://"):]
+        if u.startswith("http"): return u
+        if u.startswith("10."): return "https://doi.org/" + u
+        return u
+
+    if "url" in df.columns:
+        df["link"] = df["url"].apply(_to_http)
+    elif "doi" in df.columns:
+        df["link"] = df["doi"].apply(_to_http)
+    else:
+        df["link"] = ""
+
+    if "selected_dois" not in st.session_state:
+        st.session_state["selected_dois"] = set()
+
+    st.caption("Klicke links auf die Checkbox, um Einträge für den E-Mail-Versand auszuwählen.")
+
+    # --- KORREKTUR 2 (Sync-Fix): Logik für "Alle auswählen/abwählen" ---
+    # Wir müssen *vor* den Buttons eine Map aller DOIs und Keys erstellen.
+    doi_key_map = {}
+    for i, (_, r) in enumerate(df.iterrows(), start=1):
+        doi_norm = (r.get("doi", "") or "").lower()
+        if doi_norm:
+            sel_key = _stable_sel_key(r, i)
+            doi_key_map[doi_norm] = sel_key
+    # --- ENDE KORREKTUR 2 ---
+
+
+    # --- Aktionen: Auswahl & Download ---
+    action_col1, action_col2, action_col3 = st.columns([1, 1, 1])
+    with action_col1:
+        st.metric(label="Aktuell ausgewählt", value=f"{len(st.session_state['selected_dois'])} / {len(df)}")
+    
+    with action_col2:
+        if st.button("Alle **Ergebnisse** auswählen", use_container_width=True):
+            # --- KORREKTUR 3 (Sync-Fix): Button-Logik aktualisiert ---
+            for doi, key in doi_key_map.items():
+                st.session_state[key] = True  # Setzt den Status der individuellen Checkbox
+            st.session_state["selected_dois"] = set(doi_key_map.keys()) # Setzt die Master-Liste
+            st.rerun()
+            # --- ENDE KORREKTUR 3 ---
+
+    with action_col3:
+        if st.button("Alle **Ergebnisse** abwählen", use_container_width=True):
+            # --- KORREKTUR 4 (Sync-Fix): Button-Logik aktualisiert ---
+            for key in doi_key_map.values():
+                if key in st.session_state:
+                    st.session_state[key] = False # Setzt den Status der individuellen Checkbox
+            st.session_state["selected_dois"].clear() # Leert die Master-Liste
+            st.rerun()
+            # --- ENDE KORREKTUR 4 ---
+    
+    st.markdown("---") # Visueller Trenner
+
+    # --- Ergebnis-Loop (Neue Karten v2) ---
+    for i, (_, r) in enumerate(df.iterrows(), start=1):
+        doi_val = str(r.get("doi", "") or "")
+        doi_norm = doi_val.lower()
+        link_val = _to_http(r.get("link", "") or doi_val)
+        title = r.get("title", "") or "(ohne Titel)"
+        journal = r.get("journal", "") or ""
+        issued = r.get("issued", "") or ""
+        authors = r.get("authors", "") or ""
+        abstract = r.get("abstract", "") or ""
+
+        left, right = st.columns([0.07, 0.93])
+        
+        # Checkbox in der linken Spalte
+        with left:
+            sel_key = _stable_sel_key(r, i) # 'i' startet bei 1, passt zu KORREKTUR 2
+            
+            if doi_norm: # Nur Checkbox anzeigen, wenn eine DOI vorhanden ist
+                # --- KORREKTUR 5 (Sync-Fix): Checkbox an on_change binden ---
+                st.checkbox(
+                    " ", # Leeres Label
+                    # 'value' wird jetzt ignoriert, da der Status
+                    # über den 'key' und die 'on_change' callbacks gesteuert wird.
+                    # Wir setzen es trotzdem für die initiale Erstellung.
+                    value=st.session_state.get(sel_key, False), # Holt den aktuellen Status
+                    key=sel_key,
+                    label_visibility="hidden", # Versteckt das leere Label
+                    on_change=toggle_doi,      # <--- WICHTIG
+                    args=(doi_norm, sel_key)   # <--- WICHTIG (übergibt DOI und KEY)
+                )
+                # --- ENDE KORREKTUR 5 ---
+
+        # Gestaltete Karte in der rechten Spalte
+        with right:
+            
+            # HTML-sichere Inhalte erstellen
+            title_safe = html.escape(title)
+            meta_safe = html.escape(" · ".join([x for x in [journal, issued] if x]))
+            authors_safe = html.escape(authors)
+            
+            # URLs/Links (sollten nicht escaped werden)
+            doi_safe = _to_http(doi_val)
+            link_safe = link_val
+            
+            # Link-Text (sollte escaped werden)
+            doi_val_safe = html.escape(doi_val)
+            link_val_safe = html.escape(link_val)
+
+            # HTML für DOI und Link (nur wenn vorhanden)
+            doi_html = ""
+            if doi_val:
+                doi_html = '<b>DOI:</b> <a href="' + doi_safe + '" target="_blank">' + doi_val_safe + '</a><br>'
+                
+            link_html = ""
+            if link_val and link_val != doi_safe:
+                link_html = '<b>URL:</b> <a href="' + link_safe + '" target="_blank">' + link_val_safe + '</a><br>'
+            
+            # HTML für Abstract
+            if abstract:
+                abstract_safe = html.escape(abstract)
+                abstract_html = '<b>Abstract</b><br><p class="abstract">' + abstract_safe + '</p>'
+            else:
+                abstract_html = "<i>Kein Abstract vorhanden.</i>"
+
+            # Die komplette HTML-Karte (sicher mit '+' statt f-string)
+            card_html = (
+                '<div class="result-card">'
+                f'<h3>{title_safe}</h3>'
+                f'<div class="meta">{meta_safe}</div>'
+                f'<div class="authors">{authors_safe}</div>'
+                '<details>'
+                '<summary>Details anzeigen</summary>'
+                '<div>' +
+                doi_html +       # Variable sicher mit + einfügen
+                link_html +      # Variable sicher mit + einfügen
+                '<br>' +
+                abstract_html +  # Variable sicher mit + einfügen
+                '</div>'
+                '</details>'
+                '</div>'
+            )
+            st.markdown(card_html, unsafe_allow_html=True)
+            
+    st.divider()
+
+    # --- Download & E-Mail (neu gruppiert) ---
+    st.subheader("🏁 Aktionen: Download & Versand")
+
+    dl_col, mail_col = st.columns(2)
+
+    with dl_col:
+        st.markdown("#### ⬇️ Download")
+        def df_to_excel_bytes(df_in: pd.DataFrame) -> BytesIO | None:
+            engine = _pick_excel_engine()
+            if engine is None: return None
+            out = BytesIO()
+            with pd.ExcelWriter(out, engine=engine) as writer:
+                df_in.to_excel(writer, index=False, sheet_name="results")
+            out.seek(0)
+            return out
+
+        def _df_to_csv_bytes(df_in: pd.DataFrame) -> BytesIO:
+            b = BytesIO()
+            b.write(df_in.to_csv(index=False).encode("utf-8"))
+            b.seek(0)
+            return b
+
+        x_all = df_to_excel_bytes(df)
+        if x_all is not None:
+            st.download_button(
+                "Excel — alle Ergebnisse",
+                data=x_all,
+                file_name="paperscout_results.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        else:
+            st.download_button(
+                "CSV — alle Ergebnisse",
+                data=_df_to_csv_bytes(df),
+                file_name="paperscout_results.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+
+        if st.session_state["selected_dois"]:
+            df_sel = df[df["doi"].astype(str).str.lower().isin(st.session_state["selected_dois"])].copy()
+            x_sel = df_to_excel_bytes(df_sel)
+            if x_sel is not None:
+                st.download_button(
+                    f"Excel — {len(st.session_state['selected_dois'])} ausgewählte",
+                    data=x_sel,
+                    file_name="paperscout_selected.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            else:
+                 st.download_button(
+                    f"CSV — {len(st.session_state['selected_dois'])} ausgewählte",
+                    data=_df_to_csv_bytes(df_sel),
+                    file_name="paperscout_selected.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+        else:
+            st.button("Excel — nur ausgewählte", disabled=True, use_container_width=True)
+
+
+    with mail_col:
+        st.markdown("#### 📧 DOI-Liste senden")
+        with st.container(border=True):
+            sender_display = st.text_input(
+                "Absendername (z.B. Naomi oder Ralf)",
+                value="",
+            )
+            to_email = st.text_input("Empfänger-E-Mail-Adresse", key="doi_email_to")
+            
+            if st.button("DOI-Liste senden", use_container_width=True, type="primary"):
+                if not st.session_state["selected_dois"]:
+                    st.warning("Bitte wähle mindestens eine DOI aus.")
+                elif not to_email or "@" not in to_email:
+                    st.warning("Bitte gib eine gültige E-Mail-Adresse ein.")
+                else:
+                    ok, msg = send_doi_email(
+                        to_email,
+                        sorted(st.session_state["selected_dois"]),
+                        sender_display=sender_display.strip() or None
+                    )
+                    st.success(msg) if ok else st.error(msg)
+
+else:
+    st.info("Noch keine Ergebnisse geladen. Wähle Journals und klicke auf „Let’s go!“")
