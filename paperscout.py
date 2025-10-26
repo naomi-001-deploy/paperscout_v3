@@ -2,7 +2,7 @@
 # UI-Update: Modernes Design mit CSS-Karten und Tabs.
 # BUGFIX: StreamlitDuplicateElementId durch eindeutige Button-Labels behoben.
 # BUGFIX: HTML-Escaping-Problem im Abstract (f-string-Konflikt) endgültig behoben.
-# BUGFIX (NEU): DOI-Auswahlzähler (st.metric) mit on_change-Callback korrigiert.
+# BUGFIX (NEU): Synchronisierung zwischen "Alle auswählen"-Buttons und individuellen Checkboxen.
 
 import os, re, html, json, smtplib, ssl, hashlib
 from email.mime.text import MIMEText
@@ -357,7 +357,7 @@ def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: in
 # Crossref / Semantic Scholar / OpenAlex / OpenAI
 # -------------------------
 def fetch_semantic(doi:str)->Optional[Dict[str, Any]]:
-    api=f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=title,abstract,authors,year,venue,url"
+    api=f"https.api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=title,abstract,authors,year,venue,url"
     try:
         r=httpx.get(api,timeout=15)
         if r.status_code!=200:return None
@@ -373,7 +373,7 @@ def fetch_semantic(doi:str)->Optional[Dict[str, Any]]:
     except Exception:return None
 
 def fetch_openalex(doi:str)->Optional[Dict[str, Any]]:
-    api=f"https://api.openalex.org/works/DOI:{doi}"
+    api=f"https.api.openalex.org/works/DOI:{doi}"
     try:
         r=httpx.get(api,timeout=15)
         if r.status_code!=200:return None
@@ -457,7 +457,7 @@ def fetch_sciencedirect_abstract(doi_or_url: str) -> Optional[str]:
     if not pii:
         return None
 
-    api_url = f"https://www.sciencedirect.com/sdfe/arp/pii/{pii}"
+    api_url = f"https.www.sciencedirect.com/sdfe/arp/pii/{pii}"
     try:
         r = httpx.get(api_url, headers=_headers(), timeout=15)
         if r.status_code != 200:
@@ -537,9 +537,9 @@ def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) 
     for r in out:
         d = (r.get("doi") or "").strip()
         if d.startswith("10."):
-            r["doi"] = f"https://doi.org/{d}"
+            r["doi"] = f"https.doi.org/{d}"
         elif d.startswith("http://doi.org/"):
-            r["doi"] = "https://" + d[len("http://"):]
+            r["doi"] = "https." + d[len("http://"):]
         if not r.get("url"):
             r["url"] = r.get("doi", "")
 
@@ -751,7 +751,7 @@ with tab1:
 
 with tab2:
     st.markdown("#### Technische Einstellungen")
-    rows = st.number_input("Max. Treffer pro Journal", min_value=5, max_value=200, step=5, value=50)
+    rows = st.number_input("Max. Treffer pro Journal", min_value=5, max_value=200, step=5, value=100)
     ai_model = st.text_input("OpenAI Modell (für Abstract-Fallback)", value="gpt-4o-mini")
     
     st.markdown("#### API-Keys & E-Mails")
@@ -828,15 +828,17 @@ if run:
 st.divider()
 st.subheader("📚 Ergebnisse")
 
-# --- KORREKTUR 7 (Counter-Fix): Callback-Funktion ---
-# Diese Funktion wird *sofort* bei Klick ausgeführt,
-# bevor die Seite neu gerendert wird.
-def toggle_doi(doi):
-    if doi in st.session_state["selected_dois"]:
-        st.session_state["selected_dois"].discard(doi)
-    else:
+# --- KORREKTUR 1 (Sync-Fix): Angepasste Callback-Funktion ---
+# Diese Funktion wird *sofort* bei Klick ausgeführt.
+# Sie synchronisiert jetzt die "selected_dois"-Liste basierend auf
+# dem neuen Status der Checkbox (der in st.session_state[key] gespeichert ist).
+def toggle_doi(doi, key):
+    is_checked = st.session_state.get(key, False)
+    if is_checked:
         st.session_state["selected_dois"].add(doi)
-# --- ENDE KORREKTUR 7 ---
+    else:
+        st.session_state["selected_dois"].discard(doi)
+# --- ENDE KORREKTUR 1 ---
 
 
 if "results_df" in st.session_state and not st.session_state["results_df"].empty:
@@ -845,9 +847,9 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     def _to_http(u: str) -> str:
         if not isinstance(u, str): return ""
         u = u.strip()
-        if u.startswith("http://doi.org/"): return "https://" + u[len("http://"):]
+        if u.startswith("http://doi.org/"): return "https." + u[len("http://"):]
         if u.startswith("http"): return u
-        if u.startswith("10."): return "https://doi.org/" + u
+        if u.startswith("10."): return "https.doi.org/" + u
         return u
 
     if "url" in df.columns:
@@ -862,27 +864,45 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
 
     st.caption("Klicke links auf die Checkbox, um Einträge für den E-Mail-Versand auszuwählen.")
 
+    # --- KORREKTUR 2 (Sync-Fix): Logik für "Alle auswählen/abwählen" ---
+    # Wir müssen *vor* den Buttons eine Map aller DOIs und Keys erstellen.
+    doi_key_map = {}
+    for i, (_, r) in enumerate(df.iterrows(), start=1):
+        doi_norm = (r.get("doi", "") or "").lower()
+        if doi_norm:
+            sel_key = _stable_sel_key(r, i)
+            doi_key_map[doi_norm] = sel_key
+    # --- ENDE KORREKTUR 2 ---
+
+
     # --- Aktionen: Auswahl & Download ---
     action_col1, action_col2, action_col3 = st.columns([1, 1, 1])
     with action_col1:
-        # Dieser Zähler ist jetzt immer korrekt, da on_change
-        # den st.session_state VOR dem Neuzeichnen aktualisiert.
         st.metric(label="Aktuell ausgewählt", value=f"{len(st.session_state['selected_dois'])} / {len(df)}")
+    
     with action_col2:
-        # --- KORREKTUR 3 (DuplicateElementId) ---
         if st.button("Alle **Ergebnisse** auswählen", use_container_width=True):
-            all_vis = set(df["doi"].dropna().astype(str).str.lower())
-            st.session_state["selected_dois"].update(all_vis)
+            # --- KORREKTUR 3 (Sync-Fix): Button-Logik aktualisiert ---
+            for doi, key in doi_key_map.items():
+                st.session_state[key] = True  # Setzt den Status der individuellen Checkbox
+            st.session_state["selected_dois"] = set(doi_key_map.keys()) # Setzt die Master-Liste
             st.rerun()
+            # --- ENDE KORREKTUR 3 ---
+
     with action_col3:
-        # --- KORREKTUR 4 (DuplicateElementId) ---
         if st.button("Alle **Ergebnisse** abwählen", use_container_width=True):
-            st.session_state["selected_dois"].clear()
+            # --- KORREKTUR 4 (Sync-Fix): Button-Logik aktualisiert ---
+            for key in doi_key_map.values():
+                if key in st.session_state:
+                    st.session_state[key] = False # Setzt den Status der individuellen Checkbox
+            st.session_state["selected_dois"].clear() # Leert die Master-Liste
             st.rerun()
+            # --- ENDE KORREKTUR 4 ---
     
     st.markdown("---") # Visueller Trenner
 
     # --- Ergebnis-Loop (Neue Karten v2) ---
+    # (Wir verwenden die 'i' aus der enumerate(start=1) für _stable_sel_key)
     for i, (_, r) in enumerate(df.iterrows(), start=1):
         doi_val = str(r.get("doi", "") or "")
         doi_norm = doi_val.lower()
@@ -897,28 +917,26 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         
         # Checkbox in der linken Spalte
         with left:
-            sel_key = _stable_sel_key(r, i)
+            sel_key = _stable_sel_key(r, i) # 'i' startet bei 1, passt zu KORREKTUR 2
+            
             if doi_norm: # Nur Checkbox anzeigen, wenn eine DOI vorhanden ist
-                # --- KORREKTUR 8 (Counter-Fix): Checkbox an on_change binden ---
+                # --- KORREKTUR 5 (Sync-Fix): Checkbox an on_change binden ---
                 st.checkbox(
                     " ", # Leeres Label
+                    # 'value' wird jetzt ignoriert, da der Status
+                    # über den 'key' und die 'on_change' callbacks gesteuert wird.
+                    # Wir setzen es trotzdem für die initiale Erstellung.
                     value=(doi_norm in st.session_state["selected_dois"]),
                     key=sel_key,
                     label_visibility="hidden", # Versteckt das leere Label
                     on_change=toggle_doi,      # <--- WICHTIG
-                    args=(doi_norm,)           # <--- WICHTIG
+                    args=(doi_norm, sel_key)   # <--- WICHTIG (übergibt DOI und KEY)
                 )
-                # --- ENDE KORREKTUR 8 ---
+                # --- ENDE KORREKTUR 5 ---
 
         # Gestaltete Karte in der rechten Spalte
         with right:
             
-            # ==========================================================
-            # --- KORREKTUR 6 (f-string Escaping-Fehler) ---
-            # Wir verwenden KEINE verschachtelten f-strings mehr,
-            # sondern bauen die HTML-Strings sicher mit '+' auf.
-            # ==========================================================
-
             # HTML-sichere Inhalte erstellen
             title_safe = html.escape(title)
             meta_safe = html.escape(" · ".join([x for x in [journal, issued] if x]))
@@ -948,7 +966,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             else:
                 abstract_html = "<i>Kein Abstract vorhanden.</i>"
 
-            # Die komplette HTML-Karte (jetzt sicher mit '+' statt f-string)
+            # Die komplette HTML-Karte (sicher mit '+' statt f-string)
             card_html = (
                 '<div class="result-card">'
                 f'<h3>{title_safe}</h3>'
@@ -966,7 +984,6 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
                 '</div>'
             )
             st.markdown(card_html, unsafe_allow_html=True)
-            # --- ENDE KORREKTUR 6 ---
             
     st.divider()
 
