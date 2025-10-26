@@ -1,7 +1,8 @@
 # app_v6_openai.py – Paperscout (Nur API-Version)
 # UI-Update: Modernes Design mit CSS-Karten und Tabs.
 # BUGFIX: StreamlitDuplicateElementId durch eindeutige Button-Labels behoben.
-# BUGFIX (NEU): HTML-Escaping-Problem im Abstract (f-string-Konflikt) endgültig behoben.
+# BUGFIX: HTML-Escaping-Problem im Abstract (f-string-Konflikt) endgültig behoben.
+# BUGFIX (NEU): DOI-Auswahlzähler (st.metric) mit on_change-Callback korrigiert.
 
 import os, re, html, json, smtplib, ssl, hashlib
 from email.mime.text import MIMEText
@@ -827,6 +828,17 @@ if run:
 st.divider()
 st.subheader("📚 Ergebnisse")
 
+# --- KORREKTUR 7 (Counter-Fix): Callback-Funktion ---
+# Diese Funktion wird *sofort* bei Klick ausgeführt,
+# bevor die Seite neu gerendert wird.
+def toggle_doi(doi):
+    if doi in st.session_state["selected_dois"]:
+        st.session_state["selected_dois"].discard(doi)
+    else:
+        st.session_state["selected_dois"].add(doi)
+# --- ENDE KORREKTUR 7 ---
+
+
 if "results_df" in st.session_state and not st.session_state["results_df"].empty:
     df = st.session_state["results_df"].copy()
 
@@ -853,6 +865,8 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # --- Aktionen: Auswahl & Download ---
     action_col1, action_col2, action_col3 = st.columns([1, 1, 1])
     with action_col1:
+        # Dieser Zähler ist jetzt immer korrekt, da on_change
+        # den st.session_state VOR dem Neuzeichnen aktualisiert.
         st.metric(label="Aktuell ausgewählt", value=f"{len(st.session_state['selected_dois'])} / {len(df)}")
     with action_col2:
         # --- KORREKTUR 3 (DuplicateElementId) ---
@@ -884,16 +898,17 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         # Checkbox in der linken Spalte
         with left:
             sel_key = _stable_sel_key(r, i)
-            chk = st.checkbox(
-                " ", # Leeres Label
-                value=(doi_norm in st.session_state["selected_dois"]),
-                key=sel_key,
-                label_visibility="hidden" # Versteckt das leere Label
-            )
-            if chk and doi_norm:
-                st.session_state["selected_dois"].add(doi_norm)
-            elif not chk and doi_norm:
-                st.session_state["selected_dois"].discard(doi_norm)
+            if doi_norm: # Nur Checkbox anzeigen, wenn eine DOI vorhanden ist
+                # --- KORREKTUR 8 (Counter-Fix): Checkbox an on_change binden ---
+                st.checkbox(
+                    " ", # Leeres Label
+                    value=(doi_norm in st.session_state["selected_dois"]),
+                    key=sel_key,
+                    label_visibility="hidden", # Versteckt das leere Label
+                    on_change=toggle_doi,      # <--- WICHTIG
+                    args=(doi_norm,)           # <--- WICHTIG
+                )
+                # --- ENDE KORREKTUR 8 ---
 
         # Gestaltete Karte in der rechten Spalte
         with right:
