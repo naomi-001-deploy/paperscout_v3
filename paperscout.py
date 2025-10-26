@@ -1,4 +1,6 @@
-# app_v6_openai.py – Paperscout mit Crossref + Semantic Scholar + OpenAlex + OpenAI-Fallback + optionalem TOC-Filter
+# app_v6_openai.py – Paperscout (Nur API-Version)
+# Bereinigt von TOC-Scraping-Logik für Cloud-Hosting.
+# UI-Update: Ergebnisse mit st.expander einklappbar.
 import os, re, html, json, smtplib, ssl, hashlib
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -165,6 +167,7 @@ def _http_client(timeout: float, headers: dict | None = None) -> httpx.Client:
     - http2=False (Publisher liefern unter H2 anderes Markup)
     - follow_redirects=True
     - optionaler Proxy (HTTP/HTTPS/SOCKS)
+    - Cookie-Handling (NEU/VERBESSERT)
     """
     return httpx.Client(
         timeout=timeout,
@@ -172,6 +175,7 @@ def _http_client(timeout: float, headers: dict | None = None) -> httpx.Client:
         follow_redirects=True,
         http2=False,
         proxies=_proxy_dict(),
+        cookies=httpx.Cookies(),  # <-- VERBESSERUNG
     )
 
 
@@ -342,179 +346,15 @@ def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: in
     return []
 
 # =========================
-# Aktuelles Heft (TOC) – Registry & Tools (TOC-Logik 1:1 wie lokal)
+# KEIN TOC-SCRAPING MEHR
+# (Alle Funktionen bzgl. JOURNAL_REGISTRY, _links_*, _fetch_current_issue_links,
+# filter_to_current_issue, fetch_aom_toc_fallback etc. wurden entfernt)
 # =========================
-JOURNAL_REGISTRY: Dict[str, Dict[str, Any]] = {
-    # Elsevier / ScienceDirect
-    "The Leadership Quarterly": {
-        "publisher": "sciencedirect",
-        "issues": "https://www.sciencedirect.com/journal/the-leadership-quarterly/issues",
-        "journal_slug": "the-leadership-quarterly",
-    },
-    # SAGE
-    "Human Relations": {"publisher": "sage", "toc": "https://journals.sagepub.com/toc/HUMR/current"},
-    "Organization Studies": {"publisher": "sage", "toc": "https://journals.sagepub.com/toc/OSS/current"},
-    "Organizational Research Methods": {"publisher": "sage", "toc": "https://journals.sagepub.com/toc/ORM/current"},
-    # Wiley
-    "Journal of Organizational Behavior": {"publisher": "wiley", "toc": "https://onlinelibrary.wiley.com/toc/10991379/current"},
-    "Journal of Management Studies": {"publisher": "wiley", "toc": "https://onlinelibrary.wiley.com/toc/14676486/current"},
-    "Personnel Psychology": {"publisher": "wiley", "toc": "https://onlinelibrary.wiley.com/toc/17446570/current"},
-    # INFORMS
-    "Organization Science": {"publisher": "informs", "toc": "https://pubsonline.informs.org/toc/orsc/current"},
-    "Management Science": {"publisher": "informs", "toc": "https://pubsonline.informs.org/toc/mnsc/current"},
-    # AOM
-    "Academy of Management Journal": {"publisher": "aom", "toc": "https://journals.aom.org/toc/amj/current"},
-    # Hogrefe
-    "Zeitschrift für Arbeits- und Organisationspsychologie": {"publisher": "hogrefe", "toc": "https://econtent.hogrefe.com/toc/zao/current"},
-    # APA
-    "Journal of Applied Psychology": {"publisher": "apa", "toc": "https://psycnet.apa.org/PsycARTICLES/journal/apl"},
-    "Journal of Personality and Social Psychology": {"publisher": "apa", "toc": "https://psycnet.apa.org/PsycARTICLES/journal/psp"},
-    "Journal of Occupational Health Psychology": {"publisher": "apa", "toc": "https://psycnet.apa.org/PsycARTICLES/journal/ocp"},
-    # SAGE
-    "Journal of Management": {"publisher": "sage", "toc": "https://journals.sagepub.com/toc/jom/current"},
-    "Strategic Management Journal": {"publisher": "wiley","toc": "https://onlinelibrary.wiley.com/toc/10970266/current"},
-}
 
-def _dedupe_keep_order(urls: List[str]) -> List[str]:
-    seen: set = set()
-    out: List[str] = []
-    for u in urls:
-        if u not in seen:
-            seen.add(u); out.append(u)
-    return out
-
-# --- ScienceDirect: exakt wie lokal ---
-def _links_sciencedirect_issue(html_text: str) -> List[str]:
-    hrefs = re.findall(r'href=["\'](?:https?:\/\/www\.sciencedirect\.com)?(\/science\/article\/pii\/[A-Z0-9]+)["\']', html_text, flags=re.I)
-    return ["https://www.sciencedirect.com"+h for h in _dedupe_keep_order(hrefs)]
-
-def _pick_latest_sciencedirect_issue(issues_html: str, journal_slug: str) -> Optional[str]:
-    m = re.findall(rf'href=["\'](\/journal\/{journal_slug}\/vol\/(\d+)\/issue\/(\d+))["\']', issues_html, flags=re.I)
-    if not m:  # Fallback auf /latest
-        return f"https://www.sciencedirect.com/journal/{journal_slug}/latest"
-    tuples = [(int(v), int(i), p) for (p, v, i) in m]
-    tuples.sort(reverse=True)
-    return "https://www.sciencedirect.com" + tuples[0][2]
-
-# --- SAGE: exakt wie lokal (kein JSON-Fallback) ---
-def _links_sage_toc(html_text: str) -> List[str]:
-    """
-    Robust für SAGE:
-    - klassische <a href="/doi/(full|abs|epub|pdf)/10....">
-    - JSON-Embeds: ..."href":"/doi/(full|abs|epub|pdf)/10...."
-    - normalisiert /abs -> /full
-    """
-    # 1) HREFs im HTML
-    hrefs = re.findall(
-        r'href=["\'](\/doi\/(?:full|abs|epub|pdf)\/10\.\S+?)["\']',
-        html_text, flags=re.I
-    )
-
-    # 2) HREFs in JSON-Blöcken (häufig bei SAGE-TOC)
-    hrefs += re.findall(
-        r'"href"\s*:\s*"(\/doi\/(?:full|abs|epub|pdf)\/10\.[^"]+)"',
-        html_text, flags=re.I
-    )
-
-    # 3) Normalisieren: /abs -> /full
-    hrefs = [h.replace("/abs/", "/full/") for h in hrefs]
-
-    # 4) Dedupe + absolut machen
-    return ["https://journals.sagepub.com" + h for h in _dedupe_keep_order(hrefs)]
-
-
-# --- Wiley: exakt wie lokal ---
-def _links_wiley_toc(html_text: str) -> List[str]:
-    hrefs = re.findall(r'href=["\'](\/doi\/(?:full|abs)\/[^"\']+)["\']', html_text, flags=re.I)
-    hrefs = [h.replace("/abs/","/full/") for h in hrefs]
-    return ["https://onlinelibrary.wiley.com"+h for h in _dedupe_keep_order(hrefs)]
-
-# --- INFORMS: exakt wie lokal ---
-def _links_informs_toc(html_text: str) -> List[str]:
-    hrefs = re.findall(r'href=["\'](\/doi\/(?:full|abs)\/[^"\']+)["\']', html_text, flags=re.I)
-    hrefs = [h.replace("/abs/","/full/") for h in hrefs]
-    return ["https://pubsonline.informs.org"+h for h in _dedupe_keep_order(hrefs)]
-
-# --- AOM: exakt wie lokal ---
-def _links_aom_toc(html_text: str) -> List[str]:
-    hrefs = re.findall(r'href=["\'](\/doi\/(?:full|abs)\/[^"\']+)["\']', html_text, flags=re.I)
-    hrefs = [h.replace("/abs/","/full/") for h in hrefs]
-    return ["https://journals.aom.org"+h for h in _dedupe_keep_order(hrefs)]
-
-# --- Hogrefe: exakt wie lokal ---
-def _links_hogrefe_toc(html_text: str) -> List[str]:
-    hrefs = re.findall(r'href=["\'](\/doi\/(?:full|abs)\/[^"\']+)["\']', html_text, flags=re.I)
-    hrefs = [h.replace("/abs/","/full/") for h in hrefs]
-    return ["https://econtent.hogrefe.com"+h for h in _dedupe_keep_order(hrefs)]
-
-# --- APA: exakt wie lokal ---
-def _links_apa_toc(html_text: str) -> List[str]:
-    hrefs = re.findall(r'href=["\'](https:\/\/psycnet\.apa\.org\/(?:record|fulltext)\/[^"\']+)["\']', html_text, flags=re.I)
-    return _dedupe_keep_order(hrefs)
-
-def _fetch_current_issue_links(journal_name: str) -> List[str]:
-    """Gibt alle Artikel-Links der aktuellen Ausgabe zurück (1:1 wie lokal)."""
-    cfg = JOURNAL_REGISTRY.get(journal_name)
-    if not cfg:
-        return []
-    pub = cfg["publisher"]
-
-    if pub == "sciencedirect":
-        issues_url = cfg["issues"]
-        issues_html = fetch_html(issues_url)
-        if not issues_html:
-            return []
-        issue_url = _pick_latest_sciencedirect_issue(issues_html, cfg["journal_slug"])
-        toc_html = fetch_html(issue_url) if issue_url else None
-        if not toc_html:
-            return []
-        links = _links_sciencedirect_issue(toc_html)
-    else:
-        toc_url = cfg["toc"]
-        toc_html = fetch_html(toc_url)
-        if not toc_html:
-            return []
-        if pub == "sage":
-            links = _links_sage_toc(toc_html)
-        elif pub == "wiley":
-            links = _links_wiley_toc(toc_html)
-        elif pub == "informs":
-            links = _links_informs_toc(toc_html)
-        elif pub == "aom":
-            links = _links_aom_toc(toc_html)
-        elif pub == "hogrefe":
-            links = _links_hogrefe_toc(toc_html)
-        elif pub == "apa":
-            links = _links_apa_toc(toc_html)
-        else:
-            links = []
-
-    return links
 
 # -------------------------
 # Crossref / Semantic Scholar / OpenAlex / OpenAI
 # -------------------------
-def fetch_crossref(issn: str, since: str, until: str, rows: int) -> List[Dict[str, Any]]:
-    url=f"{CR_BASE}/journals/{issn}/works?filter=from-pub-date:{since},until-pub-date:{until}&sort=published&order=desc&rows={rows}"
-    try:
-        with httpx.Client(timeout=30,headers=_headers()) as c:
-            r=c.get(url);r.raise_for_status()
-            items=r.json().get("message",{}).get("items",[])
-    except Exception:
-        return []
-    out: List[Dict[str, Any]] = []
-    for it in items:
-        out.append({
-            "title":" ".join(it.get("title") or []),
-            "doi":it.get("DOI",""),
-            "issued":parse_date_any(it.get("created",{}).get("date-time","")) or "",
-            "journal":" ".join(it.get("container-title") or []),
-            "authors":", ".join(" ".join([a.get("given",""),a.get("family","")]).strip() for a in it.get("author",[])),
-            "abstract":_clean_text(it.get("abstract","")),
-            "url":it.get("URL","")
-        })
-    return out
-
 def fetch_semantic(doi:str)->Optional[Dict[str, Any]]:
     api=f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=title,abstract,authors,year,venue,url"
     try:
@@ -628,77 +468,8 @@ def fetch_sciencedirect_abstract(doi_or_url: str) -> Optional[str]:
         return None
 
 # -------------------------
-# ROBUSTE TOC-FILTER-TOOLS
+# KEINE TOC-FILTER-TOOLS MEHR
 # -------------------------
-_DOI_RE = re.compile(r'\b10\.\d{4,9}/\S+\b', flags=re.I)
-_PII_RE = re.compile(r'(S\d{16,})', flags=re.I)
-
-def _norm_url(u: str) -> str:
-    u = (u or "").strip()
-    if not u:
-        return ""
-    u = re.sub(r'[#?].*$', '', u)   # Query/Fragment ab
-    return u.rstrip('/').lower()     # konsistent lower, trailing slash weg
-
-def _norm_doi(doi_or_url: str) -> str:
-    s = (doi_or_url or "").strip()
-    if not s:
-        return ""
-    s = s.replace("https://doi.org/", "").replace("http://doi.org/", "")
-    s = s.replace("doi:", "").replace("DOI:", "")
-    return s.strip().rstrip('/').lower()
-
-def _extract_doi(text_or_html: str) -> Optional[str]:
-    if not text_or_html:
-        return None
-    m = _DOI_RE.search(text_or_html)
-    return _norm_doi(m.group(0)) if m else None
-
-def _extract_pii(text_or_url: str) -> Optional[str]:
-    if not text_or_url:
-        return None
-    m = _PII_RE.search(text_or_url)
-    return m.group(1) if m else None
-
-def _extract_doi_from_html_fast(html_text: str) -> Optional[str]:
-    if not html_text:
-        return None
-    m = re.search(r'<meta[^>]+name=["\']citation_doi["\'][^>]+content=["\']([^"\']+)["\']', html_text, flags=re.I)
-    if m:
-        return _norm_doi(m.group(1))
-    m = re.search(r'<meta[^>]+property=["\']og:doi["\'][^>]+content=["\']([^"\']+)["\']', html_text, flags=re.I)
-    if m:
-        return _norm_doi(m.group(1))
-    return _extract_doi(html_text)
-
-def _build_current_issue_index(journal_name: str) -> Dict[str, Any]:
-    links = _fetch_current_issue_links(journal_name)
-    dois: set = set()
-    piis: set = set()
-    urls: set = set()
-
-    for link in links:
-        link_norm = _norm_url(link)
-        if not link_norm:
-            continue
-        urls.add(link_norm)
-
-        doi = _extract_doi(link_norm)
-        pii = _extract_pii(link_norm)
-
-        if not doi:
-            html_text = fetch_html(link_norm)
-            if html_text:
-                if not pii:
-                    pii = _extract_pii(html_text)
-                doi = _extract_doi_from_html_fast(html_text)
-
-        if doi:
-            dois.add(doi)
-        if pii:
-            piis.add(pii)
-
-    return {"dois": dois, "piis": piis, "urls": urls}
 
 # =========================
 # Hauptpipeline
@@ -710,11 +481,6 @@ def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) 
 
     base = fetch_crossref_any(journal, issn, since, until, rows)
     out: List[Dict[str, Any]] = []
-
-    if not base:
-        cfg = JOURNAL_REGISTRY.get(journal, {})
-        if cfg.get("publisher") == "aom" or "academy of management" in journal.lower():
-            base = fetch_aom_toc_fallback(journal)
 
     if not base:
         return []
@@ -737,8 +503,13 @@ def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) 
                 break
 
         if not rec.get("abstract"):
+            # Prüfen, ob "sciencedirect" in der URL ist ODER ob das Journal
+            # (gemäß ISSN) ein Sciencedirect-Journal ist.
             is_sd_url = "sciencedirect.com" in (rec.get("url","") or "")
-            is_sd_journal = JOURNAL_REGISTRY.get(journal, {}).get("publisher") == "sciencedirect"
+            # (Wir haben JOURNAL_REGISTRY nicht mehr, also machen wir einen
+            # Workaround und checken, ob die ISSN zu TLQ gehört)
+            is_sd_journal = (issn == "1048-9843") # The Leadership Quarterly
+            
             if is_sd_url or is_sd_journal:
                 abs_text = fetch_sciencedirect_abstract(rec.get("url") or rec.get("doi",""))
                 if abs_text:
@@ -781,86 +552,6 @@ def dedup(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         seen.add(d); out.append(a)
     return out
 
-def _canon(u: str) -> str:
-    return (u or "").strip().rstrip("/").lower()
-
-def filter_to_current_issue(records: List[Dict[str, Any]], journal_name: str) -> List[Dict[str, Any]]:
-    """
-    Strenger TOC-Match (1:1 wie lokal):
-    - DOI-Match
-    - PII-Match (Elsevier)
-    - URL-Match (kanonisch, /abs -> /full normalisiert)
-    Ohne TOC-Daten: leer (kein fail-open).
-    """
-    if not records:
-        return []
-
-    idx = _build_current_issue_index(journal_name)
-    if not any(idx.values()):
-        return []
-
-    dois: set = idx["dois"]
-    piis: set = idx["piis"]
-    urls: set = idx["urls"]
-
-    out: List[Dict[str, Any]] = []
-    for r in records:
-        url_raw = r.get("url", "") or ""
-        doi_raw = r.get("doi", "") or ""
-
-        url = _norm_url(url_raw)
-        doi = _norm_doi(doi_raw)
-        url_norm = url.replace("/abs/", "/full/")
-        pii = _extract_pii(url) or _extract_pii(doi)
-
-        keep = (
-            (doi and doi in dois)
-            or (pii and pii in piis)
-            or (url_norm in urls or url in urls)
-        )
-
-        if keep:
-            out.append(r)
-
-    return out
-
-# =========================
-# AOM direkter Fallback (wie vorher)
-# =========================
-def fetch_aom_toc_fallback(journal_name: str) -> List[Dict[str, Any]]:
-    cfg = JOURNAL_REGISTRY.get(journal_name)
-    if not cfg or "aom" not in cfg.get("publisher", ""):
-        return []
-
-    toc_url = cfg.get("toc")
-    html_text = fetch_html(toc_url)
-    if not html_text:
-        return []
-
-    links = _links_aom_toc(html_text)
-    if not links:
-        return []
-
-    records: List[Dict[str, Any]] = []
-    for url in links:
-        html_art = fetch_html(url)
-        if not html_art:
-            continue
-        doi = _extract_doi_from_html_fast(html_art)
-        title = re.search(r'<title>(.*?)</title>', html_art, flags=re.I|re.S)
-        title = _clean_text(title.group(1)) if title else ""
-        abs_text = extract_abstract_from_html_simple(html_art)
-        records.append({
-            "title": title,
-            "doi": doi or "",
-            "issued": str(date.today()),
-            "journal": journal_name,
-            "authors": "",
-            "abstract": abs_text or "",
-            "url": url
-        })
-    return records
-
 # =========================
 # E-Mail Versand (SMTP)
 # =========================
@@ -872,7 +563,7 @@ def send_doi_email(to_email: str, dois: List[str], sender_display: Optional[str]
     sender_addr = os.getenv("EMAIL_FROM") or user
     default_name = os.getenv("EMAIL_SENDER_NAME", "paperscout")
     use_tls = os.getenv("EMAIL_USE_TLS", "true").lower() in ("1","true","yes","y")
-    use_ssl = os.getenv("EMAIL_USE_SSL", "false").lower() in ("1","true","yes","y")
+    use_ssl = os.getenv("EMAIL_USE_SSL", "false").lower() in ("1,""true","yes","y")
 
     if not (host and port and sender_addr and user and password):
         return False, "SMTP nicht konfiguriert (EMAIL_HOST/PORT/USER/PASSWORD/EMAIL_FROM)."
@@ -953,7 +644,6 @@ with col1:
         chosen: List[str] = []
         cols = st.columns(3)
 
-        # keine TOC-Vorprüfung – wie lokal
         for idx, j in enumerate(journals):
             k = _chk_key(j)
             current_val = st.session_state.get(k, False)
@@ -967,13 +657,10 @@ with col2:
     st.markdown("### ⏰ Zeitraum & Optionen")
     today = date.today()
     since = st.date_input("Seit (inkl.)", value=date(today.year, 1, 1))
-
-    # exakt wie lokal: ein Schalter → strenger TOC-Filter
-    only_current_issue = st.checkbox("Nur aktuelles Heft (TOC-Filter)", value=False)
-    st.session_state["only_current_issue"] = only_current_issue
-
     until = st.date_input("Bis (inkl.)", value=today)
 
+    # --- TOC-Filter Checkbox entfernt ---
+    
     # „letzte 30 Tage“
     last30 = st.checkbox("Nur letzte 30 Tage (ignoriert 'Seit/Bis')", value=False)
     if last30:
@@ -988,7 +675,7 @@ with col2:
         os.environ["PAPERSCOUT_OPENAI_API_KEY"] = api_key_input
         st.caption("API-Key gesetzt.")
     crossref_mail = st.text_input("📧 Crossref Mailto (empfohlen)", value=os.getenv("CROSSREF_MAILTO", ""))
-    proxy_url = st.text_input("🌐 Proxy (optional, http/https/socks5)", value=os.getenv("PAPERSCOUT_PROXY", ""))
+    proxy_url = st.text_input("🌐 Proxy (optional, http/httpshttps/socks5)", value=os.getenv("PAPERSCOUT_PROXY", ""))
     if proxy_url:
         st.session_state["proxy_url"] = proxy_url.strip()
         st.caption("Proxy aktiv. Requests laufen über diese Adresse.")
@@ -1032,9 +719,7 @@ if run:
             st.write(f"Quelle: {j}")
             rows_j = collect_all(j, s_since, s_until, int(rows), ai_model)
 
-            # strenger TOC-Filter (kein fail-open)
-            if st.session_state.get("only_current_issue"):
-                rows_j = filter_to_current_issue(rows_j, j)
+            # --- TOC-Filter-Logik entfernt ---
 
             rows_j = dedup(rows_j)
             all_rows.extend(rows_j)
@@ -1054,7 +739,7 @@ if run:
             st.session_state["selected_dois"] = set()
             st.success(f"{len(df)} Treffer geladen.")
 
-# --- Persistente Ergebnisanzeige: Karten-Layout ohne Tabelle ---
+# --- Persistente Ergebnisanzeige: Karten-Layout mit Expander ---
 st.markdown("---")
 st.subheader("Ergebnisse")
 
@@ -1109,7 +794,9 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             elif not chk and doi_norm:
                 st.session_state["selected_dois"].discard(doi_norm)
 
+        # === UI-ÄNDERUNG HIER ===
         with right:
+            # --- Standardansicht (immer sichtbar) ---
             st.markdown(f"### {title}")
             meta = " · ".join([x for x in [journal, issued] if x])
             if meta:
@@ -1118,16 +805,19 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             if authors:
                 st.markdown(f"**Autor:innen:** {authors}")
 
-            if doi_val:
-                st.markdown(f"**DOI:** {_to_http(doi_val)}")
-            if link_val and link_val != _to_http(doi_val):
-                st.markdown(f"**URL:** {link_val}")
+            # --- Ausklappbare Details ---
+            with st.expander("Details anzeigen (Abstract, DOI, URL)"):
+                if doi_val:
+                    st.markdown(f"**DOI:** {_to_http(doi_val)}")
+                if link_val and link_val != _to_http(doi_val):
+                    st.markdown(f"**URL:** {link_val}")
 
-            if abstract:
-                st.markdown("**Abstract**")
-                st.write(abstract)
-            else:
-                st.info("Kein Abstract vorhanden.")
+                if abstract:
+                    st.markdown("**Abstract**")
+                    st.write(abstract)
+                else:
+                    st.info("Kein Abstract vorhanden.")
+        # === ENDE UI-ÄNDERUNG ===
 
         st.divider()
 
