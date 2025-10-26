@@ -1,5 +1,7 @@
 # app_v6_openai.py – Paperscout (Nur API-Version)
 # UI-Update: Modernes Design mit CSS-Karten und Tabs.
+# BUGFIX: StreamlitDuplicateElementId durch eindeutige Button-Labels behoben.
+
 import os, re, html, json, smtplib, ssl, hashlib
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -604,7 +606,7 @@ def send_doi_email(to_email: str, dois: List[str], sender_display: Optional[str]
 
 # =========================
 # =========================
-# NEUE UI (v2)
+# NEUE UI (v2) - JETZT MIT BUGFIX
 # =========================
 # =========================
 st.title("🕵🏻 paperscout – Journal Service")
@@ -708,9 +710,11 @@ with tab1:
 
     sel_all_col, desel_all_col, _ = st.columns([1, 1, 4])
     with sel_all_col:
-        select_all_clicked = st.button("Alle auswählen", use_container_width=True)
+        # --- KORREKTUR 1 ---
+        select_all_clicked = st.button("Alle **Journals** auswählen", use_container_width=True)
     with desel_all_col:
-        deselect_all_clicked = st.button("Alle abwählen", use_container_width=True)
+        # --- KORREKTUR 2 ---
+        deselect_all_clicked = st.button("Alle **Journals** abwählen", use_container_width=True)
 
     if select_all_clicked:
         for j in journals:
@@ -850,12 +854,14 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     with action_col1:
         st.metric(label="Aktuell ausgewählt", value=f"{len(st.session_state['selected_dois'])} / {len(df)}")
     with action_col2:
-        if st.button("Alle auswählen", use_container_width=True):
+        # --- KORREKTUR 3 (Zeile 853 aus dem Traceback) ---
+        if st.button("Alle **Ergebnisse** auswählen", use_container_width=True):
             all_vis = set(df["doi"].dropna().astype(str).str.lower())
             st.session_state["selected_dois"].update(all_vis)
             st.rerun()
     with action_col3:
-        if st.button("Alle abwählen", use_container_width=True):
+        # --- KORREKTUR 4 ---
+        if st.button("Alle **Ergebnisse** abwählen", use_container_width=True):
             st.session_state["selected_dois"].clear()
             st.rerun()
     
