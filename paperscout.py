@@ -936,48 +936,47 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             # --- ENDE KORREKTUR 4 ---
     
     st.markdown("---") # Visueller Trenner
+    # --- NEU: Fixierte Pfeil-Navigation (Start/Ende) ---
+    FIXED_NAV_HTML = """
+    <style>
+    .fixed-nav {
+        position: fixed;
+        bottom: 1.5rem; /* Abstand von unten */
+        left: 50%;
+        transform: translateX(-50%); /* Zentrierung */
+        background-color: var(--secondary-background-color);
+        border: 1px solid var(--border-color, var(--gray-300));
+        border-radius: 25px; /* Pillenform */
+        padding: 0.5rem 1rem;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        z-index: 9999; /* Über allem anderen */
+        opacity: 0.9; /* Leichte Transparenz */
+    }
+    /* Fallback für Darkmode-Rand */
+    html.dark .fixed-nav {
+         border: 1px solid var(--border-color, var(--gray-800));
+    }
+    .fixed-nav a {
+        display: inline-block;
+        text-decoration: none;
+        color: var(--text-color);
+        font-size: 1.25rem; /* Größere Pfeile */
+        margin: 0 0.75rem;
+        transition: transform 0.1s ease-in-out;
+    }
+    .fixed-nav a:hover {
+        transform: scale(1.2);
+        color: var(--primary-color); /* Akzentfarbe beim Hover */
+    }
+    </style>
     
-# --- NEU: Fixierte Pfeil-Navigation (Start/Ende) ---
-    FIXED_NAV_HTML = """
-    <style>
-    .fixed-nav {
-        position: fixed;
-        bottom: 1.5rem; /* Abstand von unten */
-        left: 50%;
-        transform: translateX(-50%); /* Zentrierung */
-        background-color: var(--secondary-background-color);
-        border: 1px solid var(--border-color, var(--gray-300));
-        border-radius: 25px; /* Pillenform */
-        padding: 0.5rem 1rem;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        z-index: 9999; /* Über allem anderen */
-        opacity: 0.9; /* Leichte Transparenz */
-    }
-    /* Fallback für Darkmode-Rand */
-    html.dark .fixed-nav {
-         border: 1px solid var(--border-color, var(--gray-800));
-    }
-    .fixed-nav a {
-        display: inline-block;
-        text-decoration: none;
-        color: var(--text-color);
-        font-size: 1.25rem; /* Größere Pfeile */
-        margin: 0 0.75rem;
-        transition: transform 0.1s ease-in-out;
-    }
-    .fixed-nav a:hover {
-        transform: scale(1.2);
-        color: var(--primary-color); /* Akzentfarbe beim Hover */
-    }
-    </style>
-    
-    <div class="fixed-nav">
-        <a href="#results_top" title="Zum Anfang der Liste">⬆️</a>
-        <a href="#actions_bottom" title="Zum E-Mail Versand">⬇️</a>
-    </div>
-    """
-    st.markdown(FIXED_NAV_HTML, unsafe_allow_html=True)
-    # --- ENDE NEU ---
+    <div class="fixed-nav">
+        <a href="#results_top" title="Zum Anfang der Liste">⬆️</a>
+        <a href="#actions_bottom" title="Zum E-Mail Versand">⬇️</a>
+    </div>
+    """
+    st.markdown(FIXED_NAV_HTML, unsafe_allow_html=True)
+    # --- ENDE NEU ---
     
     # --- Ergebnis-Loop (Neue Karten v2) ---
     for i, (_, r) in enumerate(df.iterrows(), start=1):
