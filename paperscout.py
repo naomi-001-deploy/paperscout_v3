@@ -755,7 +755,7 @@ with tab1:
 
 with tab2:
     st.markdown("#### Technische Einstellungen")
-    rows = st.number_input("Max. Treffer pro Journal", min_value=5, max_value=200, step=5, value=50)
+    rows = st.number_input("Max. Treffer pro Journal", min_value=5, max_value=200, step=5, value=100)
     ai_model = st.text_input("OpenAI Modell (für Abstract-Fallback)", value="gpt-4o-mini")
     
     st.markdown("#### API-Keys & E-Mails")
