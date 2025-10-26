@@ -19,13 +19,13 @@ from urllib.parse import quote_plus
 
 # --- Excel-Engine Detection (xlsxwriter / openpyxl) ---
 try:
-    import xlsxwriter  # noqa: F401
+    import xlsxwriter  
     _HAS_XLSXWRITER = True
 except Exception:
     _HAS_XLSXWRITER = False
 
 try:
-    import openpyxl  # noqa: F401
+    import openpyxl  
     _HAS_OPENPYXL = True
 except Exception:
     _HAS_OPENPYXL = False
