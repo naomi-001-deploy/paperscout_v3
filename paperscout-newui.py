@@ -1,6 +1,7 @@
 # app_v6_openai.py – Paperscout (Nur API-Version)
 # UI-Update: Modernes Design mit CSS-Karten und Tabs.
 # BUGFIX: StreamlitDuplicateElementId durch eindeutige Button-Labels behoben.
+# BUGFIX: HTML-Escaping-Problem im Abstract (f-string-Konflikt) behoben.
 
 import os, re, html, json, smtplib, ssl, hashlib
 from email.mime.text import MIMEText
@@ -710,10 +711,10 @@ with tab1:
 
     sel_all_col, desel_all_col, _ = st.columns([1, 1, 4])
     with sel_all_col:
-        # --- KORREKTUR 1 ---
+        # --- KORREKTUR 1 (DuplicateElementId) ---
         select_all_clicked = st.button("Alle **Journals** auswählen", use_container_width=True)
     with desel_all_col:
-        # --- KORREKTUR 2 ---
+        # --- KORREKTUR 2 (DuplicateElementId) ---
         deselect_all_clicked = st.button("Alle **Journals** abwählen", use_container_width=True)
 
     if select_all_clicked:
@@ -854,13 +855,13 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     with action_col1:
         st.metric(label="Aktuell ausgewählt", value=f"{len(st.session_state['selected_dois'])} / {len(df)}")
     with action_col2:
-        # --- KORREKTUR 3 (Zeile 853 aus dem Traceback) ---
+        # --- KORREKTUR 3 (DuplicateElementId) ---
         if st.button("Alle **Ergebnisse** auswählen", use_container_width=True):
             all_vis = set(df["doi"].dropna().astype(str).str.lower())
             st.session_state["selected_dois"].update(all_vis)
             st.rerun()
     with action_col3:
-        # --- KORREKTUR 4 ---
+        # --- KORREKTUR 4 (DuplicateElementId) ---
         if st.button("Alle **Ergebnisse** abwählen", use_container_width=True):
             st.session_state["selected_dois"].clear()
             st.rerun()
@@ -896,25 +897,43 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
 
         # Gestaltete Karte in der rechten Spalte
         with right:
+            
+            # ==========================================================
+            # --- KORREKTUR 5 (Abstract Escaping-Fehler) ---
+            # Wir verwenden KEINE verschachtelten f-strings mehr,
+            # sondern bauen die HTML-Strings sicher mit '+' auf.
+            # ==========================================================
+
             # HTML-sichere Inhalte erstellen
             title_safe = html.escape(title)
             meta_safe = html.escape(" · ".join([x for x in [journal, issued] if x]))
             authors_safe = html.escape(authors)
-            doi_safe = _to_http(doi_val) # _to_http ist bereits sicher
+            
+            # URLs/Links (sollten nicht escaped werden)
+            doi_safe = _to_http(doi_val)
             link_safe = link_val
+            
+            # Link-Text (sollte escaped werden)
+            doi_val_safe = html.escape(doi_val)
+            link_val_safe = html.escape(link_val)
 
             # HTML für DOI und Link (nur wenn vorhanden)
-            doi_html = f'<b>DOI:</b> <a href="{html.escape(doi_safe)}" target="_blank">{html.escape(doi_val)}</a><br>' if doi_val else ""
-            link_html = f'<b>URL:</b> <a href="{html.escape(link_safe)}" target="_blank">{html.escape(link_val)}</a><br>' if link_val and link_val != doi_safe else ""
+            doi_html = ""
+            if doi_val:
+                doi_html = '<b>DOI:</b> <a href="' + doi_safe + '" target="_blank">' + doi_val_safe + '</a><br>'
+                
+            link_html = ""
+            if link_val and link_val != doi_safe:
+                link_html = '<b>URL:</b> <a href="' + link_safe + '" target="_blank">' + link_val_safe + '</a><br>'
             
             # HTML für Abstract
             if abstract:
-                # Ersetze \n mit <br> für HTML-Zeilenumbrüche
-                abstract_html = f'<b>Abstract</b><br><p class="abstract">{html.escape(abstract)}</p>'
+                abstract_safe = html.escape(abstract)
+                abstract_html = '<b>Abstract</b><br><p class="abstract">' + abstract_safe + '</p>'
             else:
                 abstract_html = "<i>Kein Abstract vorhanden.</i>"
 
-            # Die komplette HTML-Karte
+            # Die komplette HTML-Karte (jetzt sicher)
             card_html = f"""
             <div class="result-card">
                 <h3>{title_safe}</h3>
@@ -933,6 +952,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             </div>
             """
             st.markdown(card_html, unsafe_allow_html=True)
+            # --- ENDE KORREKTUR 5 ---
             
     st.divider()
 
