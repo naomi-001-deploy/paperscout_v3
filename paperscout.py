@@ -1190,50 +1190,50 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     import re
     def _key_from_doi(d: str) -> str:
         return "sel_card_" + re.sub(r"\W+", "_", (d or "").lower())[:100]
-for i, (_, r) in enumerate(df.iterrows(), start=1):
-    doi_val = str(r.get("doi", "") or "")
-    doi_norm = doi_val.lower()
-    link_val = _to_http(r.get("link", "") or doi_val)
-    title = r.get("title", "") or "(ohne Titel)"
-    journal = r.get("journal", "") or ""
-    issued = r.get("issued", "") or ""
-    authors = r.get("authors", "") or ""
-    abstract = r.get("abstract", "") or ""
-
-    left, right = st.columns([0.07, 0.93])
-    with left:
-        sel_key = _stable_sel_key(r, i)  # garantiert eindeutig
-        chk = st.checkbox(
-            "",
-            value=(doi_norm in st.session_state["selected_dois"]),
-            key=sel_key,
-        )
-        if chk and doi_norm:
-            st.session_state["selected_dois"].add(doi_norm)
-        elif not chk and doi_norm:
-            st.session_state["selected_dois"].discard(doi_norm)
-
-    with right:
-        st.markdown(f"### {title}")
-        meta = " · ".join([x for x in [journal, issued] if x])
-        if meta:
-            st.caption(meta)
-
-        if authors:
-            st.markdown(f"**Autor:innen:** {authors}")
-
-        if doi_val:
-            st.markdown(f"**DOI:** {_to_http(doi_val)}")
-        if link_val and link_val != _to_http(doi_val):
-            st.markdown(f"**URL:** {link_val}")
-
-        if abstract:
-            st.markdown("**Abstract**")
-            st.write(abstract)
-        else:
-            st.info("Kein Abstract vorhanden.")
-
-    st.divider()
+    for i, (_, r) in enumerate(df.iterrows(), start=1):
+        doi_val = str(r.get("doi", "") or "")
+        doi_norm = doi_val.lower()
+        link_val = _to_http(r.get("link", "") or doi_val)
+        title = r.get("title", "") or "(ohne Titel)"
+        journal = r.get("journal", "") or ""
+        issued = r.get("issued", "") or ""
+        authors = r.get("authors", "") or ""
+        abstract = r.get("abstract", "") or ""
+    
+        left, right = st.columns([0.07, 0.93])
+        with left:
+            sel_key = _stable_sel_key(r, i)  # garantiert eindeutig
+            chk = st.checkbox(
+                "",
+                value=(doi_norm in st.session_state["selected_dois"]),
+                key=sel_key,
+            )
+            if chk and doi_norm:
+                st.session_state["selected_dois"].add(doi_norm)
+            elif not chk and doi_norm:
+                st.session_state["selected_dois"].discard(doi_norm)
+    
+        with right:
+            st.markdown(f"### {title}")
+            meta = " · ".join([x for x in [journal, issued] if x])
+            if meta:
+                st.caption(meta)
+    
+            if authors:
+                st.markdown(f"**Autor:innen:** {authors}")
+    
+            if doi_val:
+                st.markdown(f"**DOI:** {_to_http(doi_val)}")
+            if link_val and link_val != _to_http(doi_val):
+                st.markdown(f"**URL:** {link_val}")
+    
+            if abstract:
+                st.markdown("**Abstract**")
+                st.write(abstract)
+            else:
+                st.info("Kein Abstract vorhanden.")
+    
+        st.divider()
 
 
     # --- Aktionen unter den Karten ---
