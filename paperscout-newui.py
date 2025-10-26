@@ -1,7 +1,7 @@
 # app_v6_openai.py – Paperscout (Nur API-Version)
 # UI-Update: Modernes Design mit CSS-Karten und Tabs.
 # BUGFIX: StreamlitDuplicateElementId durch eindeutige Button-Labels behoben.
-# BUGFIX: HTML-Escaping-Problem im Abstract (f-string-Konflikt) behoben.
+# BUGFIX (NEU): HTML-Escaping-Problem im Abstract (f-string-Konflikt) endgültig behoben.
 
 import os, re, html, json, smtplib, ssl, hashlib
 from email.mime.text import MIMEText
@@ -899,7 +899,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         with right:
             
             # ==========================================================
-            # --- KORREKTUR 5 (Abstract Escaping-Fehler) ---
+            # --- KORREKTUR 6 (f-string Escaping-Fehler) ---
             # Wir verwenden KEINE verschachtelten f-strings mehr,
             # sondern bauen die HTML-Strings sicher mit '+' auf.
             # ==========================================================
@@ -933,26 +933,25 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             else:
                 abstract_html = "<i>Kein Abstract vorhanden.</i>"
 
-            # Die komplette HTML-Karte (jetzt sicher)
-            card_html = f"""
-            <div class="result-card">
-                <h3>{title_safe}</h3>
-                <div class="meta">{meta_safe}</div>
-                <div class="authors">{authors_safe}</div>
-                
-                <details>
-                    <summary>Details anzeigen</summary>
-                    <div>
-                        {doi_html}
-                        {link_html}
-                        <br>
-                        {abstract_html}
-                    </div>
-                </details>
-            </div>
-            """
+            # Die komplette HTML-Karte (jetzt sicher mit '+' statt f-string)
+            card_html = (
+                '<div class="result-card">'
+                f'<h3>{title_safe}</h3>'
+                f'<div class="meta">{meta_safe}</div>'
+                f'<div class="authors">{authors_safe}</div>'
+                '<details>'
+                '<summary>Details anzeigen</summary>'
+                '<div>' +
+                doi_html +       # Variable sicher mit + einfügen
+                link_html +      # Variable sicher mit + einfügen
+                '<br>' +
+                abstract_html +  # Variable sicher mit + einfügen
+                '</div>'
+                '</details>'
+                '</div>'
+            )
             st.markdown(card_html, unsafe_allow_html=True)
-            # --- ENDE KORREKTUR 5 ---
+            # --- ENDE KORREKTUR 6 ---
             
     st.divider()
 
