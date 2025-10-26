@@ -121,10 +121,10 @@ def fetch_html(url: str, timeout: float = 25.0) -> Optional[str]:
             "Pragma": "no-cache",
             "Upgrade-Insecure-Requests": "1",
         })
-        with httpx.Client(timeout=timeout, headers=base_headers, follow_redirects=True) as c:
+        with _http_client(timeout=timeout, headers=base_headers) as c:
             r = c.get(url)
             if r.status_code == 403:
-                # Domain-spezifische Referrer erzwingen (schadet nicht, hilft oft)
+                # Domain-spezifische Referrer als Retry
                 domain_ref = None
                 if "wiley.com" in url: domain_ref = "https://onlinelibrary.wiley.com/"
                 elif "sagepub.com" in url: domain_ref = "https://journals.sagepub.com/"
@@ -133,13 +133,47 @@ def fetch_html(url: str, timeout: float = 25.0) -> Optional[str]:
                 if domain_ref:
                     r = c.get(url, headers=_headers({"Referer": domain_ref}))
             if r.status_code in (403, 429):
-                alt = dict(base_headers)
-                alt["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117 Safari/537.36"
-                r = c.get(url, headers=alt)
+                alt_headers = dict(base_headers)
+                alt_headers["User-Agent"] = (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117 Safari/537.36"
+                )
+                r = c.get(url, headers=alt_headers)
             r.raise_for_status()
             return r.text or ""
     except Exception:
         return None
+
+        
+# --- Proxy-Unterstützung (HTTP/HTTPS/SOCKS) ---
+def _proxy_dict() -> Optional[dict]:
+    """
+    Liest einen optionalen Proxy aus:
+    - ENV: PAPERSCOUT_PROXY (z. B. 'http://user:pass@host:port' oder 'socks5://host:1080')
+    - Session: st.session_state['proxy_url'] (wird im UI gesetzt)
+    Gibt ein httpx-kompatibles proxies-Dict zurück oder None.
+    """
+    p = (st.session_state.get("proxy_url") or
+         os.getenv("PAPERSCOUT_PROXY") or "").strip()
+    if not p:
+        return None
+    return {"http": p, "https": p}
+
+def _http_client(timeout: float, headers: dict | None = None) -> httpx.Client:
+    """
+    Einheitlicher httpx-Client:
+    - http2=False (Publisher liefern unter H2 anderes Markup)
+    - follow_redirects=True
+    - optionaler Proxy (HTTP/HTTPS/SOCKS)
+    """
+    return httpx.Client(
+        timeout=timeout,
+        headers=headers or _headers(),
+        follow_redirects=True,
+        http2=False,
+        proxies=_proxy_dict(),
+    )
+
 
 TAG_STRIP = re.compile(r"<[^>]+>")
 def _clean_text(s: str) -> str:
@@ -364,9 +398,30 @@ def _pick_latest_sciencedirect_issue(issues_html: str, journal_slug: str) -> Opt
 
 # --- SAGE: exakt wie lokal (kein JSON-Fallback) ---
 def _links_sage_toc(html_text: str) -> List[str]:
-    hrefs = re.findall(r'href=["\'](\/doi\/(?:full|abs|epub)\/[^"\']+)["\']', html_text, flags=re.I)
-    hrefs = [h.replace("/abs/","/full/") for h in hrefs]
-    return ["https://journals.sagepub.com"+h for h in _dedupe_keep_order(hrefs)]
+    """
+    Robust für SAGE:
+    - klassische <a href="/doi/(full|abs|epub|pdf)/10....">
+    - JSON-Embeds: ..."href":"/doi/(full|abs|epub|pdf)/10...."
+    - normalisiert /abs -> /full
+    """
+    # 1) HREFs im HTML
+    hrefs = re.findall(
+        r'href=["\'](\/doi\/(?:full|abs|epub|pdf)\/10\.\S+?)["\']',
+        html_text, flags=re.I
+    )
+
+    # 2) HREFs in JSON-Blöcken (häufig bei SAGE-TOC)
+    hrefs += re.findall(
+        r'"href"\s*:\s*"(\/doi\/(?:full|abs|epub|pdf)\/10\.[^"]+)"',
+        html_text, flags=re.I
+    )
+
+    # 3) Normalisieren: /abs -> /full
+    hrefs = [h.replace("/abs/", "/full/") for h in hrefs]
+
+    # 4) Dedupe + absolut machen
+    return ["https://journals.sagepub.com" + h for h in _dedupe_keep_order(hrefs)]
+
 
 # --- Wiley: exakt wie lokal ---
 def _links_wiley_toc(html_text: str) -> List[str]:
@@ -933,6 +988,13 @@ with col2:
         os.environ["PAPERSCOUT_OPENAI_API_KEY"] = api_key_input
         st.caption("API-Key gesetzt.")
     crossref_mail = st.text_input("📧 Crossref Mailto (empfohlen)", value=os.getenv("CROSSREF_MAILTO", ""))
+    proxy_url = st.text_input("🌐 Proxy (optional, http/https/socks5)", value=os.getenv("PAPERSCOUT_PROXY", ""))
+    if proxy_url:
+        st.session_state["proxy_url"] = proxy_url.strip()
+        st.caption("Proxy aktiv. Requests laufen über diese Adresse.")
+    else:
+        st.session_state["proxy_url"] = ""
+
     if crossref_mail:
         os.environ["CROSSREF_MAILTO"] = crossref_mail
         st.caption("Crossref-Mailto gesetzt (bessere Crossref-Ergebnisse).")
