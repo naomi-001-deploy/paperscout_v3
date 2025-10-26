@@ -936,6 +936,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             # --- ENDE KORREKTUR 4 ---
     
     st.markdown("---") # Visueller Trenner
+    
 # --- NEU: Fixierte Pfeil-Navigation (Start/Ende) ---
     FIXED_NAV_HTML = """
     <style>
@@ -977,6 +978,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     """
     st.markdown(FIXED_NAV_HTML, unsafe_allow_html=True)
     # --- ENDE NEU ---
+    
     # --- Ergebnis-Loop (Neue Karten v2) ---
     for i, (_, r) in enumerate(df.iterrows(), start=1):
         doi_val = str(r.get("doi", "") or "")
