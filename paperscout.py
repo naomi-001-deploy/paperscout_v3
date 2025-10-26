@@ -5,6 +5,17 @@ from email.utils import formataddr
 import streamlit as st
 import pandas as pd
 import httpx
+import hashlib
+
+def _stable_sel_key(r: dict, i: int) -> str:
+    # robuste Basis: DOI -> URL -> Titel -> Index
+    basis = (str(r.get("doi") or "") + "|" +
+             str(r.get("url") or "") + "|" +
+             str(r.get("title") or "")).lower()
+    # kurze, saubere ID
+    h = hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
+    return f"sel_card_{h}_{i}"
+
 from functools import lru_cache
 from io import BytesIO
 from datetime import date, datetime, timedelta
@@ -925,52 +936,6 @@ def filter_to_current_issue(records: List[Dict[str, Any]], journal_name: str) ->
     return out
 
 
-    dois: set = idx["dois"]
-    piis: set = idx["piis"]
-    urls: set = idx["urls"]
-
-    out: List[Dict[str, Any]] = []
-    for r in records:
-        url_raw = r.get("url", "") or ""
-        doi_raw = r.get("doi", "") or ""
-
-        # Normalisieren
-        url = _norm_url(url_raw)
-        doi = _norm_doi(doi_raw)
-
-        # Wiley/SAGE/INFORMS/AOM: /abs/ -> /full/
-        url_norm = url.replace("/abs/", "/full/")
-
-        # ScienceDirect: PII aus URL oder ggf. DOI/HTML (zweiterer wird in _build_current_issue_index schon versucht)
-        pii = _extract_pii(url) or _extract_pii(doi)
-
-        keep = False
-
-        # 1) DOI-Match
-        if doi and doi in dois:
-            keep = True
-
-        # 2) PII-Match (Elsevier)
-        if not keep and pii and pii in piis:
-            keep = True
-
-        # 3) URL-Match (kanonische URL)
-        if not keep and (url_norm in urls or url in urls):
-            keep = True
-
-        if keep:
-            out.append(r)
-
-    # Optionales Debug
-    if debug:
-        st.info(
-            f"[TOC-Filter] „{journal_name}“: "
-            f"{len(out)}/{len(records)} Einträge behalten "
-            f"(DOIs:{len(dois)} PIIs:{len(piis)} URLs:{len(urls)})"
-        )
-
-    return out
-
 # =========================
 # E-Mail Versand (SMTP)
 # =========================
@@ -1011,7 +976,7 @@ def send_doi_email(to_email: str, dois: List[str], sender_display: Optional[str]
             context = ssl.create_default_context()
             with smtplib.SMTP_SSL(host, port, context=context) as server:
                 server.login(user, password)
-                server.sendmail(sender, [to_email], msg.as_string())
+                server.sendmail(sender_addr, [to_email], msg.as_string())
         else:
             with smtplib.SMTP(host, port) as server:
                 server.ehlo()
@@ -1019,7 +984,8 @@ def send_doi_email(to_email: str, dois: List[str], sender_display: Optional[str]
                     server.starttls(context=ssl.create_default_context())
                     server.ehlo()
                 server.login(user, password)
-                server.sendmail(sender, [to_email], msg.as_string())
+                server.sendmail(sender_addr, [to_email], msg.as_string())
+
         return True, "E-Mail gesendet."
     except Exception as e:
         return False, f"E-Mail Versand fehlgeschlagen: {e}"
@@ -1079,9 +1045,12 @@ with col2:
     today = date.today()
     since = st.date_input("Seit (inkl.)", value=date(today.year, 1, 1))
     only_current_issue = st.checkbox("Nur aktuelles Heft (TOC-Filter)", value=False)
-    strict_toc = st.checkbox("Strenger TOC-Filter (fail-closed, riskant online)", value=False)
+    strict_toc_checkbox = st.checkbox("Strenger TOC-Filter (fail-closed, riskant online)", value=False)
+    # Logik: Wenn „Nur aktuelles Heft“ aktiv ist, ist strict standardmäßig True.
+    # Ein explizites Häkchen bei „Strenger TOC-Filter“ erzwingt strict=True.
+    strict_effective = bool(only_current_issue) or bool(strict_toc_checkbox)
     st.session_state["only_current_issue"] = only_current_issue
-    st.session_state["strict_toc"] = strict_toc
+    st.session_state["strict_toc"] = strict_effective
     until = st.date_input("Bis (inkl.)", value=today)
 
     # 🔁 NEU: „letzte 30 Tage“
@@ -1138,26 +1107,26 @@ if run:
             st.write(f"Quelle: {j}")
             rows_j = collect_all(j, s_since, s_until, int(rows), ai_model)
         
-            # 🔎 Debug: TOC-Index anzeigen (nur wenn TOC-Filter aktiv)
+            # Optionaler TOC-Filter
+            if st.session_state.get("only_current_issue"):
+                rows_j = filter_to_current_issue(rows_j, j)
+        
+            # 🔎 Debug NACH dem Filtern
             if debug and st.session_state.get("only_current_issue"):
                 idx = _build_current_issue_index(j)
                 st.caption(
                     f"TOC-Index {j}: DOIs={len(idx['dois'])}, "
-                    f"PIIs={len(idx['piis'])}, URLs={len(idx['urls'])}"
+                    f"PIIs={len(idx['piis'])}, URLs={len(idx['urls'])} · "
+                    f"Nach Filter: {len(rows_j)}"
                 )
-            if debug and st.session_state.get("only_current_issue"):
-                st.caption(f"→ Nach Filter: {len(rows_j)} Treffer aus aktuellem Heft")
-
-        
-            # Optionaler TOC-Filter nach der Auswahl
-            if st.session_state.get("only_current_issue"):
-                rows_j = filter_to_current_issue(rows_j, j)
         
             # Dedup und aufsammeln
             rows_j = dedup(rows_j)
             all_rows.extend(rows_j)
         
+            # Fortschritt aktualisieren
             progress.progress(min(i / max(n, 1), 1.0))
+
 
 
             # Dedup und aufsammeln
@@ -1221,53 +1190,51 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     import re
     def _key_from_doi(d: str) -> str:
         return "sel_card_" + re.sub(r"\W+", "_", (d or "").lower())[:100]
+for i, (_, r) in enumerate(df.iterrows(), start=1):
+    doi_val = str(r.get("doi", "") or "")
+    doi_norm = doi_val.lower()
+    link_val = _to_http(r.get("link", "") or doi_val)
+    title = r.get("title", "") or "(ohne Titel)"
+    journal = r.get("journal", "") or ""
+    issued = r.get("issued", "") or ""
+    authors = r.get("authors", "") or ""
+    abstract = r.get("abstract", "") or ""
 
-    for _, r in df.iterrows():
-        doi_val = str(r.get("doi", "") or "")
-        doi_norm = doi_val.lower()
-        link_val = _to_http(r.get("link", "") or doi_val)
-        title = r.get("title", "") or "(ohne Titel)"
-        journal = r.get("journal", "") or ""
-        issued = r.get("issued", "") or ""
-        authors = r.get("authors", "") or ""
-        abstract = r.get("abstract", "") or ""
+    left, right = st.columns([0.07, 0.93])
+    with left:
+        sel_key = _stable_sel_key(r, i)  # garantiert eindeutig
+        chk = st.checkbox(
+            "",
+            value=(doi_norm in st.session_state["selected_dois"]),
+            key=sel_key,
+        )
+        if chk and doi_norm:
+            st.session_state["selected_dois"].add(doi_norm)
+        elif not chk and doi_norm:
+            st.session_state["selected_dois"].discard(doi_norm)
 
-        # Karte: Checkbox links, Inhalt rechts
-        left, right = st.columns([0.07, 0.93])
-        with left:
-            chk = st.checkbox(
-                "",
-                value=(doi_norm in st.session_state["selected_dois"]),
-                key=_key_from_doi(doi_norm),
-            )
-            if chk:
-                st.session_state["selected_dois"].add(doi_norm)
-            else:
-                st.session_state["selected_dois"].discard(doi_norm)
+    with right:
+        st.markdown(f"### {title}")
+        meta = " · ".join([x for x in [journal, issued] if x])
+        if meta:
+            st.caption(meta)
 
-        with right:
-            # Kopf (Titel + Meta)
-            st.markdown(f"### {title}")
-            meta = " · ".join([x for x in [journal, issued] if x])
-            if meta:
-                st.caption(meta)
+        if authors:
+            st.markdown(f"**Autor:innen:** {authors}")
 
-            # Details (voll angezeigt)
-            if authors:
-                st.markdown(f"**Autor:innen:** {authors}")
+        if doi_val:
+            st.markdown(f"**DOI:** {_to_http(doi_val)}")
+        if link_val and link_val != _to_http(doi_val):
+            st.markdown(f"**URL:** {link_val}")
 
-            if doi_val:
-                st.markdown(f"**DOI:** {_to_http(doi_val)}")
-            if link_val and link_val != _to_http(doi_val):
-                st.markdown(f"**URL:** {link_val}")
+        if abstract:
+            st.markdown("**Abstract**")
+            st.write(abstract)
+        else:
+            st.info("Kein Abstract vorhanden.")
 
-            if abstract:
-                st.markdown("**Abstract**")
-                st.write(abstract)
-            else:
-                st.info("Kein Abstract vorhanden.")
+    st.divider()
 
-        st.divider()
 
     # --- Aktionen unter den Karten ---
     b1, b2, b3, b4 = st.columns([1.2, 1.2, 2, 4])
