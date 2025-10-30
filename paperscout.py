@@ -752,6 +752,10 @@ with tab1:
         last30 = st.checkbox("Nur letzte 30 Tage", value=False)
         if last30:
             st.caption(f"Aktiv: {(today - timedelta(days=30)).isoformat()} bis {today.isoformat()}")
+        last7 = st.checkbox("Nur letzte 7 Tage", value=False)
+        if last7:
+            st.caption(f"Aktiv: {(today - timedelta(days=7)).isoformat()} bis {today.isoformat()}")
+
 
 with tab2:
     st.markdown("#### Technische Einstellungen")
