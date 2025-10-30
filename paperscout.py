@@ -804,7 +804,9 @@ if run:
         all_rows: List[Dict[str, Any]] = []
         progress = st.progress(0, "Starte...")
         n = len(chosen)
-
+        if last7: # <-- Zuerst auf 7 Tage prüfen
+                    s_since = (today - timedelta(days=7)).isoformat()
+                    s_until = today.isoformat()
         if last30:
             s_since = (today - timedelta(days=30)).isoformat()
             s_until = today.isoformat()
