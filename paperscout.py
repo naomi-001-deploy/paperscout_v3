@@ -755,6 +755,10 @@ with tab1:
         last7 = st.checkbox("Nur letzte 7 Tage", value=False)
         if last7:
             st.caption(f"Aktiv: {(today - timedelta(days=7)).isoformat()} bis {today.isoformat()}")
+        last1 = st.checkbox("Nur letzter Tag", value=False)
+        if last1:
+            st.caption(f"Aktiv: {(today - timedelta(days=1)).isoformat()} bis {today.isoformat()}")
+            
 
 
 with tab2:
@@ -809,6 +813,9 @@ if run:
             s_until = today.isoformat()
         elif last30:
             s_since = (today - timedelta(days=30)).isoformat()
+            s_until = today.isoformat()
+        elif last1:
+            s_since = (today - timedelta(days=1)).isoformat()
             s_until = today.isoformat()
         else:
             s_since, s_until = str(since), str(until)
