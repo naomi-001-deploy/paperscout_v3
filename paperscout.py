@@ -807,7 +807,7 @@ if run:
         if last7:
             s_since = (today - timedelta(days=7)).isoformat()
             s_until = today.isoformat()
-        if last30:
+        elif last30:
             s_since = (today - timedelta(days=30)).isoformat()
             s_until = today.isoformat()
         else:
