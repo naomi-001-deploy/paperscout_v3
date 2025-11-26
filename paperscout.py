@@ -224,6 +224,10 @@ JOURNAL_ISSN: Dict[str, str] = {
     "Journal of Occupational Health Psychology": "1076-8998",
     "Journal of Management": "0149-2063",
     "Strategic Management Journal": "0143-2095",
+    "Science": "0036-8075",                     
+    "Nature": "0028-0836",                       
+    "Administrative Science Quarterly": "0001-8392",
+    "Management Teaching Review": "2379-2981",
 }
 
 # =========================
@@ -241,6 +245,9 @@ ALT_ISSN: Dict[str, List[str]] = {
     "Academy of Management Journal": ["1948-0989"],
     "The Leadership Quarterly": ["1873-3409"],
     "Organizational Research Methods": ["1552-7425"],
+    "Science": ["1095-9203"],
+    "Nature": ["1476-4687"],
+    "Administrative Science Quarterly": ["1930-3815"],
 }
 
 def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: int) -> List[Dict[str, Any]]:
