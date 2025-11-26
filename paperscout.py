@@ -1242,8 +1242,8 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
 
         with rel_col_right:
             if "relevance_score" in df.columns:
-                st.caption("Top 5 nach Relevanz:")
-                top_df = df.sort_values("relevance_score", ascending=False).head(5)
+                st.caption("Top 10 nach Relevanz:")
+                top_df = df.sort_values("relevance_score", ascending=False).head(10)
                 for _, row in top_df.iterrows():
                     t = str(row.get("title", "") or "(ohne Titel)")
                     a = str(row.get("authors", "") or "")
