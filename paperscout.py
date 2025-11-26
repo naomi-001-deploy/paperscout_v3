@@ -88,6 +88,15 @@ def setup_smtp_from_secrets_or_env():
     setdef("EMAIL_SENDER_NAME", "paperscout")
 
 setup_smtp_from_secrets_or_env()
+# --- OpenAI-Key optional aus Streamlit Secrets holen ---
+try:
+    if "PAPERSCOUT_OPENAI_API_KEY" in st.secrets:
+        key_val = str(st.secrets["PAPERSCOUT_OPENAI_API_KEY"]).strip()
+        if key_val:
+            os.environ["PAPERSCOUT_OPENAI_API_KEY"] = key_val
+except Exception:
+    # Wenn st.secrets nicht verfügbar ist (lokal ohne Config), einfach ignorieren
+    pass
 
 # =========================
 # App-Konfiguration
