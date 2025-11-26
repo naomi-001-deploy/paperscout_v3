@@ -17,6 +17,13 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any
 from urllib.parse import quote_plus
 
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.cluster import KMeans
+    _HAS_SKLEARN = True
+except Exception:
+    _HAS_SKLEARN = False
+
 # --- Excel-Engine Detection (xlsxwriter / openpyxl) ---
 try:
     import xlsxwriter  # noqa: F401
@@ -561,6 +568,88 @@ def dedup(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         seen.add(d); out.append(a)
     return out
 
+def _build_thematic_clusters(
+    df: pd.DataFrame,
+    k: int = 5,
+    min_docs: int = 5,
+) -> Optional[List[Dict[str, Any]]]:
+    """
+    Erstellt einfache Themencluster aus Abstract/Titel.
+    - Nutzt Abstract, falls vorhanden, sonst Titel.
+    - Liefert Liste aus Clustern mit Top-Terms & Indices.
+    """
+    if not _HAS_SKLEARN:
+        return None
+
+    if df.empty:
+        return None
+
+    # Textquelle: bevorzugt Abstract, sonst Titel
+    texts = []
+    indices = []
+    for idx, row in df.iterrows():
+        abstract = str(row.get("abstract", "") or "").strip()
+        title = str(row.get("title", "") or "").strip()
+        text = abstract if len(abstract) > 40 else title  # etwas Heuristik
+        if len(text) < 20:
+            continue
+        texts.append(text)
+        indices.append(idx)
+
+    if len(texts) < min_docs:
+        # zu wenig verwertbare Texte
+        return None
+
+    # K nicht größer als Anzahl Dokumente
+    k = max(2, min(k, len(texts)))
+
+    # TF-IDF Vektorizer
+    vectorizer = TfidfVectorizer(
+        max_features=3000,
+        stop_words="english",    # Journals sind häufig Englisch
+        ngram_range=(1, 2),
+    )
+    X = vectorizer.fit_transform(texts)
+
+    # KMeans-Clustering
+    km = KMeans(
+        n_clusters=k,
+        n_init=10,
+        random_state=42,
+    )
+    labels = km.fit_predict(X)
+
+    feature_names = vectorizer.get_feature_names_out()
+    cluster_centers = km.cluster_centers_
+
+    clusters: List[Dict[str, Any]] = []
+    for cluster_id in range(k):
+        # Top-Terme für das Cluster
+        center = cluster_centers[cluster_id]
+        top_idx = center.argsort()[::-1][:8]  # Top 8 Begriffe
+        top_terms = [feature_names[i] for i in top_idx]
+
+        # Alle Dokumente dieses Clusters
+        doc_indices = [
+            indices[i] for i, label in enumerate(labels) if label == cluster_id
+        ]
+
+        # Ein kurzer, lesbarer Label-Text
+        label_text = ", ".join(top_terms[:3])
+        label_text = label_text if label_text else f"Cluster {cluster_id+1}"
+
+        clusters.append(
+            {
+                "cluster_id": cluster_id,
+                "label": f"Cluster {cluster_id+1}: {label_text}",
+                "top_terms": top_terms,
+                "indices": doc_indices,
+            }
+        )
+
+    return clusters
+
+
 # =========================
 # E-Mail Versand (SMTP)
 # =========================
@@ -929,6 +1018,80 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
 
     if "selected_dois" not in st.session_state:
         st.session_state["selected_dois"] = set()
+
+        # --------------------------------------
+    # 🧩 Themencluster (Beta)
+    # --------------------------------------
+    st.markdown("### 🧩 Themencluster (Beta)")
+
+    if not _HAS_SKLEARN:
+        st.info("Themencluster benötigen scikit-learn. Das Paket scheint aktuell nicht installiert zu sein.")
+    else:
+        # Prüfen, ob überhaupt sinnvolle Texte vorhanden sind
+        has_some_text = df["abstract"].fillna("").str.len().gt(40).any() if "abstract" in df.columns else False
+        has_titles = df["title"].fillna("").str.len().gt(20).any() if "title" in df.columns else False
+
+        if not (has_some_text or has_titles):
+            st.info("Zu wenig Text (Abstract/Titel), um sinnvolle Themencluster zu bilden.")
+        else:
+            col_cluster_left, col_cluster_right = st.columns([2, 3])
+            with col_cluster_left:
+                k = st.slider(
+                    "Anzahl Cluster",
+                    min_value=2,
+                    max_value=10,
+                    value=5,
+                    step=1,
+                    help="Je mehr Cluster, desto feiner wird thematisch unterschieden.",
+                )
+                min_docs = st.slider(
+                    "Minimale Anzahl verwertbarer Artikel",
+                    min_value=3,
+                    max_value=20,
+                    value=5,
+                    step=1,
+                    help="Mindestens so viele Artikel mit brauchbarem Text müssen vorhanden sein.",
+                )
+
+                if st.button("🔍 Themencluster berechnen", use_container_width=True):
+                    clusters = _build_thematic_clusters(df, k=k, min_docs=min_docs)
+                    if clusters is None or len(clusters) == 0:
+                        st.warning("Konnte keine sinnvollen Cluster bilden (zu wenig Daten oder technische Probleme).")
+                    else:
+                        st.session_state["topic_clusters"] = clusters
+                        st.success(f"{len(clusters)} Cluster erstellt.")
+
+            with col_cluster_right:
+                if "topic_clusters" in st.session_state and st.session_state["topic_clusters"]:
+                    clusters = st.session_state["topic_clusters"]
+
+                    # Tabs je Cluster
+                    tab_labels = [c["label"] for c in clusters]
+                    tabs = st.tabs(tab_labels)
+
+                    for tab, cluster in zip(tabs, clusters):
+                        with tab:
+                            st.caption(f"Top-Begriffe: {', '.join(cluster['top_terms'][:8])}")
+                            sub_df = df.loc[cluster["indices"]]
+
+                            for _, row in sub_df.iterrows():
+                                t = str(row.get("title", "") or "(ohne Titel)")
+                                a = str(row.get("authors", "") or "")
+                                j = str(row.get("journal", "") or "")
+                                d = str(row.get("issued", "") or "")
+                                link = _to_http(row.get("link", "") or row.get("doi", "") or "")
+
+                                # Kleine kompakte Darstellung je Artikel
+                                st.markdown(
+                                    f"**{t}**  \n"
+                                    f"{a}  \n"
+                                    f"*{j}* ({d})  \n"
+                                    + (f"[🔗 Link]({link})" if link else ""),
+                                )
+                                st.markdown("---")
+                else:
+                    st.caption("Noch keine Cluster berechnet. Wähle Parameter und klicke auf „Themencluster berechnen“.")
+
 
     st.caption("Klicke links auf die Checkbox, um Einträge für den E-Mail-Versand auszuwählen.")
 
