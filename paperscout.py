@@ -1377,18 +1377,17 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         # Gestaltete Karte in der rechten Spalte
         with right:
             
-        # HTML-sichere Inhalte erstellen
-        title_safe = html.escape(title)
-        authors_safe = html.escape(authors)
-        
-        # Meta-Informationen (Journal, Datum, Relevanz)
-        meta_parts = [journal, issued]
-        if relevance is not None and relevance != "" and not pd.isna(relevance):
-            meta_parts.append(f"Relevanz: {relevance}/100")
-        
-        meta_text = " · ".join([x for x in meta_parts if x])
-        meta_safe = html.escape(meta_text)
-
+            # HTML-sichere Inhalte erstellen
+            title_safe = html.escape(title)
+            authors_safe = html.escape(authors)
+            
+            # Meta-Informationen (Journal, Datum, Relevanz)
+            meta_parts = [journal, issued]
+            if relevance is not None and relevance != "" and not pd.isna(relevance):
+                meta_parts.append(f"Relevanz: {relevance}/100")
+            
+            meta_text = " · ".join([x for x in meta_parts if x])
+            meta_safe = html.escape(meta_text)
 
             
             # URLs/Links (sollten nicht escaped werden)
