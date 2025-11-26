@@ -103,7 +103,7 @@ except Exception:
 # =========================
 st.set_page_config(page_title="paperscout UI", layout="wide")
 
-HARDCODED_KEY = "sk-proj..."
+HARDCODED_KEY = ""
 HARDCODED_CROSSREF_MAIL = ""
 if HARDCODED_KEY:
     os.environ["PAPERSCOUT_OPENAI_API_KEY"] = HARDCODED_KEY
