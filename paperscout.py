@@ -579,19 +579,31 @@ def send_doi_email(to_email: str, dois: List[str], sender_display: Optional[str]
 
     display_name = (sender_display or "").strip() or default_name
 
+    lines = []
+    for rec in records:
+        doi = str(rec.get("doi", "") or "")
+        title = str(rec.get("title", "") or "(ohne Titel)")
+        authors = str(rec.get("authors", "") or "Autor:innen unbekannt")
+        journal = str(rec.get("journal", "") or "Journal unbekannt")
+
+        line = f"- {doi}  |  {title}  |  {authors}  |  {journal}"
+        lines.append(line)
+
     body_lines = [
         "Hallo,",
         "",
         f"ausgewählt von: {display_name}",
         "",
-        "Hier ist die Liste der ausgewählten DOIs:",
-        *[f"- {d if d.startswith('10.') else d}" for d in dois],
+        "Hier ist die Liste der ausgewählten Artikel:",
+        "",
+        *lines,
         "",
         "Viele Grüße",
         display_name,
     ]
+
     msg = MIMEText("\n".join(body_lines), _charset="utf-8")
-    msg["Subject"] = f"[paperscout] {len(dois)} DOI(s) — {display_name}"
+    msg["Subject"] = f"[paperscout] {len(records)} Artikel — {display_name}"
     msg["From"] = formataddr((display_name, sender_addr))
     msg["To"] = to_email
 
