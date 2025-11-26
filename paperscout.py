@@ -17,13 +17,6 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any
 from urllib.parse import quote_plus
 
-try:
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.cluster import KMeans
-    _HAS_SKLEARN = True
-except Exception:
-    _HAS_SKLEARN = False
-
 # --- Excel-Engine Detection (xlsxwriter / openpyxl) ---
 try:
     import xlsxwriter  # noqa: F401
@@ -231,8 +224,10 @@ JOURNAL_ISSN: Dict[str, str] = {
     "Journal of Occupational Health Psychology": "1076-8998",
     "Journal of Management": "0149-2063",
     "Strategic Management Journal": "0143-2095",
-    "Science": "0036-8075",                     
-    "Nature": "0028-0836",                       
+
+    # NEU:
+    "Science": "0036-8075",
+    "Nature": "0028-0836",
     "Administrative Science Quarterly": "0001-8392",
     "Management Teaching Review": "2379-2981",
 }
@@ -252,9 +247,12 @@ ALT_ISSN: Dict[str, List[str]] = {
     "Academy of Management Journal": ["1948-0989"],
     "The Leadership Quarterly": ["1873-3409"],
     "Organizational Research Methods": ["1552-7425"],
+
+    # NEU:
     "Science": ["1095-9203"],
     "Nature": ["1476-4687"],
     "Administrative Science Quarterly": ["1930-3815"],
+    # Management Teaching Review: keine separate E-ISSN nötig
 }
 
 def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: int) -> List[Dict[str, Any]]:
@@ -568,92 +566,138 @@ def dedup(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         seen.add(d); out.append(a)
     return out
 
-def _build_thematic_clusters(
-    df: pd.DataFrame,
-    k: int = 5,
-    min_docs: int = 5,
-) -> Optional[List[Dict[str, Any]]]:
-    """
-    Erstellt einfache Themencluster aus Abstract/Titel.
-    - Nutzt Abstract, falls vorhanden, sonst Titel.
-    - Liefert Liste aus Clustern mit Top-Terms & Indices.
-    """
-    if not _HAS_SKLEARN:
-        return None
+# =========================
+# Themencluster mit OpenAI-Embeddings (ohne sklearn)
+# =========================
+def _get_embedding(text: str, model: str = "text-embedding-3-small") -> List[float]:
+    key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not key:
+        return []
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+        # Text etwas begrenzen
+        text_short = text[:4000]
+        resp = client.embeddings.create(
+            model=model,
+            input=text_short
+        )
+        return list(resp.data[0].embedding)
+    except Exception:
+        return []
 
+def _kmeans(vectors: List[List[float]], k: int, max_iter: int = 20) -> List[int]:
+    """
+    Simple K-Means Implementierung auf Basis euklidischer Distanz.
+    Gibt eine Liste von Cluster-Labels (gleiche Länge wie vectors) zurück.
+    """
+    import random
+    if not vectors or k <= 0:
+        return []
+
+    n = len(vectors)
+    k = max(1, min(k, n))
+
+    # Zufällige Startzentren
+    centers = random.sample(vectors, k)
+
+    labels = [0] * n
+    for _ in range(max_iter):
+        # Zuweisung
+        changed = False
+        for i, v in enumerate(vectors):
+            dists = [sum((vi - ci) ** 2 for vi, ci in zip(v, c)) for c in centers]
+            new_label = dists.index(min(dists))
+            if new_label != labels[i]:
+                labels[i] = new_label
+                changed = True
+
+        if not changed:
+            break
+
+        # Neue Zentren
+        new_centers: List[List[float]] = []
+        for cluster_id in range(k):
+            members = [vectors[i] for i, lab in enumerate(labels) if lab == cluster_id]
+            if not members:
+                new_centers.append(random.choice(vectors))
+                continue
+            dim = len(members[0])
+            avg = [sum(vec[d] for vec in members) / len(members) for d in range(dim)]
+            new_centers.append(avg)
+        centers = new_centers
+
+    return labels
+
+def build_clusters_openai(df: pd.DataFrame, k: int = 5, min_docs: int = 5) -> Optional[List[Dict[str, Any]]]:
+    """
+    Bildet Themencluster basierend auf OpenAI-Embeddings.
+    - nutzt Abstract (falls vorhanden), sonst Titel
+    - gibt Cluster mit Indices + Beispieltext zurück
+    """
     if df.empty:
         return None
 
-    # Textquelle: bevorzugt Abstract, sonst Titel
-    texts = []
-    indices = []
+    texts: List[str] = []
+    indices: List[int] = []
+
     for idx, row in df.iterrows():
         abstract = str(row.get("abstract", "") or "").strip()
         title = str(row.get("title", "") or "").strip()
-        text = abstract if len(abstract) > 40 else title  # etwas Heuristik
+        text = abstract if len(abstract) > 40 else title
         if len(text) < 20:
             continue
         texts.append(text)
         indices.append(idx)
 
     if len(texts) < min_docs:
-        # zu wenig verwertbare Texte
         return None
 
-    # K nicht größer als Anzahl Dokumente
-    k = max(2, min(k, len(texts)))
+    embeddings: List[List[float]] = []
+    clean_indices: List[int] = []
+    clean_texts: List[str] = []
 
-    # TF-IDF Vektorizer
-    vectorizer = TfidfVectorizer(
-        max_features=3000,
-        stop_words="english",    # Journals sind häufig Englisch
-        ngram_range=(1, 2),
-    )
-    X = vectorizer.fit_transform(texts)
+    for txt, idx in zip(texts, indices):
+        emb = _get_embedding(txt)
+        if emb:
+            embeddings.append(emb)
+            clean_indices.append(idx)
+            clean_texts.append(txt)
 
-    # KMeans-Clustering
-    km = KMeans(
-        n_clusters=k,
-        n_init=10,
-        random_state=42,
-    )
-    labels = km.fit_predict(X)
+    if len(embeddings) < min_docs:
+        return None
 
-    feature_names = vectorizer.get_feature_names_out()
-    cluster_centers = km.cluster_centers_
+    k = max(2, min(k, len(embeddings)))
+    labels = _kmeans(embeddings, k=k)
 
     clusters: List[Dict[str, Any]] = []
     for cluster_id in range(k):
-        # Top-Terme für das Cluster
-        center = cluster_centers[cluster_id]
-        top_idx = center.argsort()[::-1][:8]  # Top 8 Begriffe
-        top_terms = [feature_names[i] for i in top_idx]
-
-        # Alle Dokumente dieses Clusters
-        doc_indices = [
-            indices[i] for i, label in enumerate(labels) if label == cluster_id
-        ]
-
-        # Ein kurzer, lesbarer Label-Text
-        label_text = ", ".join(top_terms[:3])
-        label_text = label_text if label_text else f"Cluster {cluster_id+1}"
-
+        member_positions = [i for i, lab in enumerate(labels) if lab == cluster_id]
+        if not member_positions:
+            continue
+        member_indices = [clean_indices[i] for i in member_positions]
+        sample_text = clean_texts[member_positions[0]]
         clusters.append(
             {
                 "cluster_id": cluster_id,
-                "label": f"Cluster {cluster_id+1}: {label_text}",
-                "top_terms": top_terms,
-                "indices": doc_indices,
+                "label": f"Cluster {cluster_id+1}",
+                "sample_text": (sample_text[:240] + "...") if len(sample_text) > 240 else sample_text,
+                "indices": member_indices,
             }
         )
 
+    if not clusters:
+        return None
     return clusters
-
 
 # =========================
 # E-Mail Versand (SMTP)
 # =========================
-def send_doi_email(to_email: str, dois: List[str], sender_display: Optional[str] = None) -> tuple[bool, str]:
+def send_doi_email(
+    to_email: str,
+    records: List[Dict[str, Any]],
+    sender_display: Optional[str] = None
+) -> tuple[bool, str]:
     host = os.getenv("EMAIL_HOST")
     port = int(os.getenv("EMAIL_PORT", "587"))
     user = os.getenv("EMAIL_USER")
@@ -661,21 +705,22 @@ def send_doi_email(to_email: str, dois: List[str], sender_display: Optional[str]
     sender_addr = os.getenv("EMAIL_FROM") or user
     default_name = os.getenv("EMAIL_SENDER_NAME", "paperscout")
     use_tls = os.getenv("EMAIL_USE_TLS", "true").lower() in ("1","true","yes","y")
-    use_ssl = os.getenv("EMAIL_USE_SSL", "false").lower() in ("1,""true","yes","y")
+    use_ssl = os.getenv("EMAIL_USE_SSL", "false").lower() in ("1","true","yes","y")
 
     if not (host and port and sender_addr and user and password):
         return False, "SMTP nicht konfiguriert (EMAIL_HOST/PORT/USER/PASSWORD/EMAIL_FROM)."
 
     display_name = (sender_display or "").strip() or default_name
 
-    lines = []
+    lines: List[str] = []
     for rec in records:
         doi = str(rec.get("doi", "") or "")
         title = str(rec.get("title", "") or "(ohne Titel)")
         authors = str(rec.get("authors", "") or "Autor:innen unbekannt")
         journal = str(rec.get("journal", "") or "Journal unbekannt")
+        issued = str(rec.get("issued", "") or "")
 
-        line = f"- {doi}  |  {title}  |  {authors}  |  {journal}"
+        line = f"- {doi} | {title} | {authors} | {journal}{f' ({issued})' if issued else ''}"
         lines.append(line)
 
     body_lines = [
@@ -690,7 +735,6 @@ def send_doi_email(to_email: str, dois: List[str], sender_display: Optional[str]
         "Viele Grüße",
         display_name,
     ]
-
     msg = MIMEText("\n".join(body_lines), _charset="utf-8")
     msg["Subject"] = f"[paperscout] {len(records)} Artikel — {display_name}"
     msg["From"] = formataddr((display_name, sender_addr))
@@ -1019,79 +1063,69 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     if "selected_dois" not in st.session_state:
         st.session_state["selected_dois"] = set()
 
-        # --------------------------------------
-    # 🧩 Themencluster (Beta)
+    # --------------------------------------
+    # 🧩 Themencluster (Beta) – OpenAI-Embeddings
     # --------------------------------------
     st.markdown("### 🧩 Themencluster (Beta)")
-
-    if not _HAS_SKLEARN:
-        st.info("Themencluster benötigen scikit-learn. Das Paket scheint aktuell nicht installiert zu sein.")
+    key_openai = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not key_openai:
+        st.info("Bitte trage einen OpenAI API-Key ein (Tab 'Einstellungen'), um Themencluster zu berechnen.")
     else:
-        # Prüfen, ob überhaupt sinnvolle Texte vorhanden sind
-        has_some_text = df["abstract"].fillna("").str.len().gt(40).any() if "abstract" in df.columns else False
-        has_titles = df["title"].fillna("").str.len().gt(20).any() if "title" in df.columns else False
-
-        if not (has_some_text or has_titles):
-            st.info("Zu wenig Text (Abstract/Titel), um sinnvolle Themencluster zu bilden.")
-        else:
-            col_cluster_left, col_cluster_right = st.columns([2, 3])
-            with col_cluster_left:
-                k = st.slider(
-                    "Anzahl Cluster",
-                    min_value=2,
-                    max_value=10,
-                    value=5,
-                    step=1,
-                    help="Je mehr Cluster, desto feiner wird thematisch unterschieden.",
-                )
-                min_docs = st.slider(
-                    "Minimale Anzahl verwertbarer Artikel",
-                    min_value=3,
-                    max_value=20,
-                    value=5,
-                    step=1,
-                    help="Mindestens so viele Artikel mit brauchbarem Text müssen vorhanden sein.",
-                )
-
-                if st.button("🔍 Themencluster berechnen", use_container_width=True):
-                    clusters = _build_thematic_clusters(df, k=k, min_docs=min_docs)
-                    if clusters is None or len(clusters) == 0:
-                        st.warning("Konnte keine sinnvollen Cluster bilden (zu wenig Daten oder technische Probleme).")
-                    else:
-                        st.session_state["topic_clusters"] = clusters
-                        st.success(f"{len(clusters)} Cluster erstellt.")
-
-            with col_cluster_right:
-                if "topic_clusters" in st.session_state and st.session_state["topic_clusters"]:
-                    clusters = st.session_state["topic_clusters"]
-
-                    # Tabs je Cluster
-                    tab_labels = [c["label"] for c in clusters]
-                    tabs = st.tabs(tab_labels)
-
-                    for tab, cluster in zip(tabs, clusters):
-                        with tab:
-                            st.caption(f"Top-Begriffe: {', '.join(cluster['top_terms'][:8])}")
-                            sub_df = df.loc[cluster["indices"]]
-
-                            for _, row in sub_df.iterrows():
-                                t = str(row.get("title", "") or "(ohne Titel)")
-                                a = str(row.get("authors", "") or "")
-                                j = str(row.get("journal", "") or "")
-                                d = str(row.get("issued", "") or "")
-                                link = _to_http(row.get("link", "") or row.get("doi", "") or "")
-
-                                # Kleine kompakte Darstellung je Artikel
-                                st.markdown(
-                                    f"**{t}**  \n"
-                                    f"{a}  \n"
-                                    f"*{j}* ({d})  \n"
-                                    + (f"[🔗 Link]({link})" if link else ""),
-                                )
-                                st.markdown("---")
+        cl_left, cl_right = st.columns([2, 3])
+        with cl_left:
+            cluster_k = st.slider(
+                "Anzahl Cluster",
+                min_value=2,
+                max_value=10,
+                value=5,
+                step=1,
+                key="cluster_k_slider",
+                help="Je mehr Cluster, desto feiner die thematische Unterteilung."
+            )
+            cluster_min_docs = st.slider(
+                "Minimale Anzahl verwertbarer Artikel",
+                min_value=3,
+                max_value=20,
+                value=5,
+                step=1,
+                key="cluster_min_docs_slider",
+                help="Mindestens so viele Artikel mit Abstract oder ausreichend langem Titel."
+            )
+            if st.button("🔍 Themencluster berechnen", use_container_width=True, key="btn_cluster_compute"):
+                clusters = build_clusters_openai(df, k=cluster_k, min_docs=cluster_min_docs)
+                if not clusters:
+                    st.warning("Konnte keine sinnvollen Themencluster bilden (zu wenig Text oder technische Probleme).")
                 else:
-                    st.caption("Noch keine Cluster berechnet. Wähle Parameter und klicke auf „Themencluster berechnen“.")
+                    st.session_state["topic_clusters_openai"] = clusters
+                    st.success(f"{len(clusters)} Cluster erstellt.")
 
+        with cl_right:
+            clusters = st.session_state.get("topic_clusters_openai") or []
+            if clusters:
+                tab_labels = [c["label"] for c in clusters]
+                tabs = st.tabs(tab_labels)
+                for tab, cluster in zip(tabs, clusters):
+                    with tab:
+                        st.caption("Beispieltext aus diesem Cluster:")
+                        st.info(cluster["sample_text"])
+                        sub_df = df.loc[cluster["indices"]] if cluster["indices"] else pd.DataFrame()
+                        st.caption(f"{len(sub_df)} Artikel im Cluster:")
+                        for _, row in sub_df.iterrows():
+                            t = str(row.get("title", "") or "(ohne Titel)")
+                            a = str(row.get("authors", "") or "")
+                            j = str(row.get("journal", "") or "")
+                            d = str(row.get("issued", "") or "")
+                            link = _to_http(row.get("link", "") or row.get("doi", "") or "")
+
+                            st.markdown(
+                                f"**{t}**  \n"
+                                f"{a}  \n"
+                                f"*{j}* ({d})  \n"
+                                + (f"[🔗 Link]({link})" if link else "")
+                            )
+                            st.markdown("---")
+            else:
+                st.caption("Noch keine Cluster berechnet. Wähle Parameter und klicke auf „Themencluster berechnen“.")
 
     st.caption("Klicke links auf die Checkbox, um Einträge für den E-Mail-Versand auszuwählen.")
 
@@ -1194,9 +1228,6 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
                 # --- KORREKTUR 5 (Sync-Fix): Checkbox an on_change binden ---
                 st.checkbox(
                     " ", # Leeres Label
-                    # 'value' wird jetzt ignoriert, da der Status
-                    # über den 'key' und die 'on_change' callbacks gesteuert wird.
-                    # Wir setzen es trotzdem für die initiale Erstellung.
                     value=st.session_state.get(sel_key, False), # Holt den aktuellen Status
                     key=sel_key,
                     label_visibility="hidden", # Versteckt das leere Label
@@ -1359,9 +1390,14 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
                 elif not to_email or "@" not in to_email:
                     st.warning("Bitte gib eine gültige E-Mail-Adresse ein.")
                 else:
+                    # Ausgewählte DOIs (lowercase)
+                    sel_dois = st.session_state["selected_dois"]
+                    df_sel = df[df["doi"].astype(str).str.lower().isin(sel_dois)].copy()
+                    records = df_sel.to_dict(orient="records")
+
                     ok, msg = send_doi_email(
                         to_email,
-                        sorted(st.session_state["selected_dois"]),
+                        records,
                         sender_display=sender_display.strip() or None
                     )
                     st.success(msg) if ok else st.error(msg)
