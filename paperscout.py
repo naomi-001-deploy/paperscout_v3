@@ -638,6 +638,55 @@ def _kmeans(vectors: List[List[float]], k: int, max_iter: int = 20) -> List[int]
 
     return labels
 
+def _ai_name_cluster(examples: List[str], model: str = "gpt-4o-mini") -> Optional[str]:
+    """
+    Erzeugt mit OpenAI einen kurzen, sprechenden Clusternamen (3–6 Wörter, deutsch)
+    basierend auf einigen Beispieltexten (Abstracts/Titel) aus dem Cluster.
+    """
+    key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not key:
+        return None
+
+    # Nur ein paar Beispiele und pro Text begrenzen, damit der Prompt klein bleibt
+    snippets = [(t or "").strip()[:600] for t in examples[:5] if t and t.strip()]
+    if not snippets:
+        return None
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+
+        joined = "\n\n---\n\n".join(snippets)
+
+        system_msg = (
+            "Du bist eine wissenschaftliche Assistentin, die Themencluster aus "
+            "Forschungsartikeln benennt. "
+            "Deine Aufgabe ist es, einen sehr kurzen, prägnanten Titel (3–6 Wörter) "
+            "für das Thema zu vergeben. Schreibe auf Deutsch, ohne Anführungszeichen."
+        )
+        user_msg = (
+            "Hier sind einige Abstracts oder Titel von Artikeln, die zum selben Themencluster gehören:\n\n"
+            f"{joined}\n\n"
+            "Gib mir bitte NUR einen kurzen, sprechenden Namen für das Thema (3–6 Wörter, Deutsch), "
+            "ohne Anführungszeichen, ohne zusätzliche Erklärung."
+        )
+
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.2,
+        )
+        label = (resp.choices[0].message.content or "").strip()
+        # Evtl. Anführungszeichen entfernen
+        label = re.sub(r'^[\"“”]+|[\"“”]+$', '', label).strip()
+        return label or None
+    except Exception:
+        return None
+
+
 def build_clusters_openai(df: pd.DataFrame, k: int = 5, min_docs: int = 5) -> Optional[List[Dict[str, Any]]]:
     """
     Bildet Themencluster basierend auf OpenAI-Embeddings.
@@ -697,6 +746,21 @@ def build_clusters_openai(df: pd.DataFrame, k: int = 5, min_docs: int = 5) -> Op
 
     if not clusters:
         return None
+
+    key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if key:
+        # Mapping Index -> Text, damit wir pro Cluster die Beispiele holen können
+        idx_to_text = {idx: txt for idx, txt in zip(clean_indices, clean_texts)}
+
+        for cluster in clusters:
+            ex_texts = [idx_to_text.get(i, "") for i in cluster.get("indices", [])]
+            ex_texts = [t for t in ex_texts if t]
+            if not ex_texts:
+                continue
+            ai_label = _ai_name_cluster(ex_texts)
+            if ai_label:
+                cluster["label"] = f"Cluster {cluster['cluster_id']+1}: {ai_label}"
+                
     return clusters
 
 # =========================
