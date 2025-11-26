@@ -700,6 +700,64 @@ def build_clusters_openai(df: pd.DataFrame, k: int = 5, min_docs: int = 5) -> Op
     return clusters
 
 # =========================
+# Relevanz-Rating mit OpenAI-Embeddings
+# =========================
+def _cosine_sim(v1: List[float], v2: List[float]) -> float:
+    if not v1 or not v2 or len(v1) != len(v2):
+        return 0.0
+    num = sum(a * b for a, b in zip(v1, v2))
+    den1 = sum(a * a for a in v1) ** 0.5
+    den2 = sum(b * b for b in v2) ** 0.5
+    if den1 == 0 or den2 == 0:
+        return 0.0
+    return num / (den1 * den2)
+
+
+def compute_relevance_scores(
+    df: pd.DataFrame,
+    query_text: str,
+    min_text_len: int = 30,
+    model: str = "text-embedding-3-small",
+) -> Optional[pd.Series]:
+    """
+    Berechnet eine Relevanzbewertung (0–100) je Artikel
+    basierend auf Embedding-Ähnlichkeit zwischen Query und Abstract/Titel.
+    """
+    query_text = (query_text or "").strip()
+    if not query_text:
+        return None
+
+    q_emb = _get_embedding(query_text, model=model)
+    if not q_emb:
+        return None
+
+    scores: Dict[int, float] = {}
+
+    for idx, row in df.iterrows():
+        abstract = str(row.get("abstract", "") or "").strip()
+        title = str(row.get("title", "") or "").strip()
+        text = abstract if len(abstract) >= min_text_len else title
+        if len(text) < min_text_len:
+            scores[idx] = 0.0
+            continue
+
+        emb = _get_embedding(text, model=model)
+        if not emb:
+            scores[idx] = 0.0
+            continue
+
+        sim = _cosine_sim(q_emb, emb)
+        # Auf 0–100 skalieren, negative Werte kappen
+        sim = max(sim, 0.0)
+        scores[idx] = round(sim * 100, 1)
+
+    if not scores:
+        return None
+
+    return pd.Series(scores, name="relevance_score")
+
+
+# =========================
 # E-Mail Versand (SMTP)
 # =========================
 def send_doi_email(
@@ -1136,6 +1194,76 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             else:
                 st.caption("Noch keine Cluster berechnet. Wähle Parameter und klicke auf „Themencluster berechnen“.")
 
+        # --------------------------------------
+    # 🎯 Relevanz-Rating (Beta)
+    # --------------------------------------
+    st.markdown("### 🎯 Relevanz-Rating (Beta)")
+
+    rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not rel_key:
+        st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (Tab 'Einstellungen').")
+    else:
+        rel_col_left, rel_col_right = st.columns([2, 3])
+        with rel_col_left:
+            relevance_query = st.text_area(
+                "Beschreibe kurz dein Forschungsinteresse / deine Fragestellung:",
+                value=st.session_state.get("relevance_query", ""),
+                height=100,
+                help="Beispiel: 'transformational leadership, follower well-being, mediated by trust'",
+                key="relevance_query_input",
+            )
+
+            min_len = st.slider(
+                "Minimale Textlänge (Abstract/Titel), damit ein Artikel bewertet wird",
+                min_value=20,
+                max_value=100,
+                value=30,
+                step=5,
+                key="relevance_min_text_len",
+            )
+
+            if st.button("⭐ Relevanz berechnen", use_container_width=True, key="btn_compute_relevance"):
+                if not relevance_query.strip():
+                    st.warning("Bitte gib eine Beschreibung deines Forschungsinteresses ein.")
+                else:
+                    st.session_state["relevance_query"] = relevance_query.strip()
+                    rel_series = compute_relevance_scores(
+                        df,
+                        relevance_query.strip(),
+                        min_text_len=min_len,
+                    )
+                    if rel_series is None:
+                        st.warning("Konnte keine Relevanzwerte berechnen (kein Text oder kein API-Key).")
+                    else:
+                        # In DataFrame übernehmen
+                        df["relevance_score"] = rel_series
+                        st.session_state["results_df"] = df
+                        st.success("Relevanzwerte wurden berechnet und den Ergebnissen hinzugefügt.")
+
+        with rel_col_right:
+            if "relevance_score" in df.columns:
+                st.caption("Top 5 nach Relevanz:")
+                top_df = df.sort_values("relevance_score", ascending=False).head(5)
+                for _, row in top_df.iterrows():
+                    t = str(row.get("title", "") or "(ohne Titel)")
+                    a = str(row.get("authors", "") or "")
+                    j = str(row.get("journal", "") or "")
+                    d = str(row.get("issued", "") or "")
+                    score = row.get("relevance_score", 0)
+                    link = _to_http(row.get("link", "") or row.get("doi", "") or "")
+
+                    st.markdown(
+                        f"**{t}**  \n"
+                        f"{a}  \n"
+                        f"*{j}* ({d})  \n"
+                        f"Relevanz: **{score} / 100**  \n"
+                        + (f"[🔗 Link]({link})" if link else "")
+                    )
+                    st.markdown("---")
+            else:
+                st.caption("Noch keine Relevanzwerte berechnet. Gib oben eine Beschreibung ein und klicke auf „Relevanz berechnen“.")
+
+
     st.caption("Klicke links auf die Checkbox, um Einträge für den E-Mail-Versand auszuwählen.")
 
     # --- KORREKTUR 2 (Sync-Fix): Logik für "Alle auswählen/abwählen" ---
@@ -1225,6 +1353,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         journal = r.get("journal", "") or ""
         issued = r.get("issued", "") or ""
         authors = r.get("authors", "") or ""
+        relevance = r.get("relevance_score", None)
         abstract = r.get("abstract", "") or ""
 
         left, right = st.columns([0.07, 0.93])
@@ -1248,10 +1377,19 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         # Gestaltete Karte in der rechten Spalte
         with right:
             
-            # HTML-sichere Inhalte erstellen
-            title_safe = html.escape(title)
-            meta_safe = html.escape(" · ".join([x for x in [journal, issued] if x]))
-            authors_safe = html.escape(authors)
+        # HTML-sichere Inhalte erstellen
+        title_safe = html.escape(title)
+        authors_safe = html.escape(authors)
+        
+        # Meta-Informationen (Journal, Datum, Relevanz)
+        meta_parts = [journal, issued]
+        if relevance is not None and relevance != "" and not pd.isna(relevance):
+            meta_parts.append(f"Relevanz: {relevance}/100")
+        
+        meta_text = " · ".join([x for x in meta_parts if x])
+        meta_safe = html.escape(meta_text)
+
+
             
             # URLs/Links (sollten nicht escaped werden)
             doi_safe = _to_http(doi_val)
