@@ -3,7 +3,8 @@
 # BUGFIX: HTML-Escaping-Problem im Abstract (f-string-Konflikt) endgültig behoben.
 # BUGFIX: Synchronisierung zwischen "Alle auswählen"-Buttons und individuellen Checkboxen.
 # FEATURE (NEU): Dynamische Farbgebung (Dark Mode / Light Mode) durch Streamlit CSS-Variablen.
-# FEATURE (UPDATE): Themencluster jetzt untereinander als ausklappbare Karten.
+# FEATURE (UPDATE): Themencluster jetzt untereinander als ausklappbare Karten mit Checkboxen.
+# FEATURE (UPDATE): Relevanz-Liste mit Checkboxen und ausklappbaren Abstracts.
 # FIX: Relevanz-Rating erscheint garantiert erst nach dem Laden der Ergebnisse.
 
 import os, re, html, json, smtplib, ssl, hashlib
@@ -39,14 +40,15 @@ def _pick_excel_engine() -> str | None:
         return "openpyxl"
     return None
 
-def _stable_sel_key(r: dict, i: int) -> str:
-    # robuste Basis: DOI -> URL -> Titel -> Index
+def _stable_sel_key(r: dict, suffix: str) -> str:
+    """Erzeugt einen eindeutigen Key für Widgets basierend auf DOI und einem Suffix."""
+    # robuste Basis: DOI -> URL -> Titel
     basis = (str(r.get("doi") or "") + "|" +
              str(r.get("url") or "") + "|" +
              str(r.get("title") or "")).lower()
     # kurze, saubere ID
     h = hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
-    return f"sel_card_{h}_{i}"
+    return f"sel_card_{h}_{suffix}"
 
 # --- SMTP aus Secrets/Env laden (robust, auch wenn keine secrets.toml vorhanden ist) ---
 def setup_smtp_from_secrets_or_env():
@@ -1237,6 +1239,92 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
 
     if "selected_dois" not in st.session_state:
         st.session_state["selected_dois"] = set()
+        
+    # --- Helper Funktion zum Rendern einer Artikel-Karte mit Checkbox ---
+    def render_row_ui(row: pd.Series, unique_suffix: str):
+        """
+        Rendert eine einzelne Zeile bestehend aus Checkbox (links) und Karte (rechts).
+        Die Karte enthält Details und Abstract als Klapptext.
+        """
+        doi_val = str(row.get("doi", "") or "")
+        doi_norm = doi_val.lower()
+        link_val = _to_http(row.get("link", "") or doi_val)
+        title = row.get("title", "") or "(ohne Titel)"
+        journal = row.get("journal", "") or ""
+        issued = row.get("issued", "") or ""
+        authors = row.get("authors", "") or ""
+        relevance = row.get("relevance_score", None)
+        abstract = row.get("abstract", "") or ""
+        
+        left, right = st.columns([0.07, 0.93])
+        
+        # Checkbox links
+        with left:
+            sel_key = _stable_sel_key(row.to_dict(), unique_suffix)
+            if doi_norm:
+                # Value wird berechnet aus dem globalen State, um Sync zu garantieren
+                is_selected = doi_norm in st.session_state["selected_dois"]
+                st.checkbox(
+                    " ",
+                    value=is_selected,
+                    key=sel_key,
+                    label_visibility="hidden",
+                    on_change=toggle_doi,
+                    args=(doi_norm, sel_key)
+                )
+
+        # Karte rechts
+        with right:
+            title_safe = html.escape(title)
+            authors_safe = html.escape(authors)
+            
+            meta_parts = [journal, issued]
+            # NEU: Relevanz prominent in der Meta-Zeile
+            if relevance is not None and relevance != "" and not pd.isna(relevance):
+                meta_parts.append(f"<b>Relevanz: {relevance}/100</b>")
+            
+            meta_text = " · ".join([x for x in meta_parts if x])
+            # Wir nutzen hier kein html.escape für meta_text komplett, weil wir <b> Tags drin haben wollen
+            # Daher müssen die Einzelteile sicher sein. journal/issued sind meist safe, aber zur Sicherheit:
+            
+            # HTML-Sichere Links
+            doi_safe = _to_http(doi_val)
+            link_safe = link_val
+            doi_val_safe = html.escape(doi_val)
+            link_val_safe = html.escape(link_val)
+
+            doi_html = ""
+            if doi_val:
+                doi_html = '<b>DOI:</b> <a href="' + doi_safe + '" target="_blank">' + doi_val_safe + '</a><br>'
+                
+            link_html = ""
+            if link_val and link_val != doi_safe:
+                link_html = '<b>URL:</b> <a href="' + link_safe + '" target="_blank">' + link_val_safe + '</a><br>'
+            
+            if abstract:
+                abstract_safe = html.escape(abstract)
+                abstract_html = '<b>Abstract</b><br><p class="abstract">' + abstract_safe + '</p>'
+            else:
+                abstract_html = "<i>Kein Abstract vorhanden.</i>"
+
+            card_html = (
+                '<div class="result-card">'
+                f'<h3>{title_safe}</h3>'
+                f'<div class="meta">{meta_text}</div>'
+                f'<div class="authors">{authors_safe}</div>'
+                '<details>'
+                '<summary>Details anzeigen</summary>'
+                '<div>' +
+                doi_html +
+                link_html +
+                '<br>' +
+                abstract_html +
+                '</div>'
+                '</details>'
+                '</div>'
+            )
+            st.markdown(card_html, unsafe_allow_html=True)
+
 
     # --------------------------------------
     # 🧩 Themencluster (Beta) – OpenAI-Embeddings
@@ -1281,7 +1369,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         # --- UPDATE: Karten-Design (Expander untereinander) ---
         clusters = st.session_state.get("topic_clusters_openai") or []
         if clusters:
-            for cluster in clusters:
+            for c_idx, cluster in enumerate(clusters):
                 label_text = cluster["label"]
                 # Wir nutzen st.expander für das "Aufklappen"
                 with st.expander(label_text, expanded=False):
@@ -1291,16 +1379,9 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
                     sub_df = df.loc[cluster["indices"]] if cluster["indices"] else pd.DataFrame()
                     st.caption(f"{len(sub_df)} Artikel in diesem Cluster:")
                     
-                    for _, row in sub_df.iterrows():
-                        t = str(row.get("title", "") or "(ohne Titel)")
-                        a = str(row.get("authors", "") or "")
-                        j = str(row.get("journal", "") or "")
-                        d = str(row.get("issued", "") or "")
-                        link = _to_http(row.get("link", "") or row.get("doi", "") or "")
-                        
-                        st.markdown(
-                            f"• **{t}** — {a} ({j}, {d}) " + (f"[🔗 Link]({link})" if link else "")
-                        )
+                    # Hier rendern wir nun auch die vollwertigen Karten mit Checkboxen und Abstract
+                    for r_idx, (_, row) in enumerate(sub_df.iterrows()):
+                        render_row_ui(row, f"clus_{c_idx}_{r_idx}")
         else:
             if key_openai:
                 st.caption("Noch keine Cluster berechnet. Wähle Parameter und klicke auf „Themencluster berechnen“.")
@@ -1316,18 +1397,22 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     if not rel_key:
         st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (Tab 'Einstellungen').")
     else:
-        rel_col_left, rel_col_right = st.columns([2, 3])
+        # Layout Aufteilung: Links Eingabe, Rechts Ergebnisse
+        # Damit die Ergebnisse nicht "gequetscht" wirken, geben wir rechts mehr Platz
+        rel_col_left, rel_col_right = st.columns([1, 2])
+        
         with rel_col_left:
+            st.markdown("#### Eingabe")
             relevance_query = st.text_area(
-                "Beschreibe kurz dein Forschungsinteresse / deine Fragestellung:",
+                "Forschungsinteresse / Fragestellung:",
                 value=st.session_state.get("relevance_query", ""),
-                height=100,
+                height=150,
                 help="Beispiel: 'transformational leadership, follower well-being, mediated by trust'",
                 key="relevance_query_input",
             )
 
             min_len = st.slider(
-                "Minimale Textlänge (Abstract/Titel), damit ein Artikel bewertet wird",
+                "Min. Textlänge (Zeichen)",
                 min_value=20,
                 max_value=100,
                 value=30,
@@ -1337,7 +1422,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
 
             if st.button("⭐ Relevanz berechnen", use_container_width=True, key="btn_compute_relevance"):
                 if not relevance_query.strip():
-                    st.warning("Bitte gib eine Beschreibung deines Forschungsinteresses ein.")
+                    st.warning("Bitte gib eine Beschreibung ein.")
                 else:
                     st.session_state["relevance_query"] = relevance_query.strip()
                     rel_series = compute_relevance_scores(
@@ -1346,39 +1431,26 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
                         min_text_len=min_len,
                     )
                     if rel_series is None:
-                        st.warning("Konnte keine Relevanzwerte berechnen (kein Text oder kein API-Key).")
+                        st.warning("Konnte keine Werte berechnen.")
                     else:
                         # In DataFrame übernehmen
                         df["relevance_score"] = rel_series
                         st.session_state["results_df"] = df
-                        st.success("Relevanzwerte wurden berechnet und den Ergebnissen hinzugefügt.")
+                        st.success("Berechnet!")
                         st.rerun()
 
         with rel_col_right:
+            st.markdown("#### Top 10 Ergebnisse")
             if "relevance_score" in df.columns:
-                st.caption("Top 10 nach Relevanz:")
                 top_df = df.sort_values("relevance_score", ascending=False).head(10)
-                for _, row in top_df.iterrows():
-                    t = str(row.get("title", "") or "(ohne Titel)")
-                    a = str(row.get("authors", "") or "")
-                    j = str(row.get("journal", "") or "")
-                    d = str(row.get("issued", "") or "")
-                    score = row.get("relevance_score", 0)
-                    link = _to_http(row.get("link", "") or row.get("doi", "") or "")
-
-                    st.markdown(
-                        f"**{t}** \n"
-                        f"{a}  \n"
-                        f"*{j}* ({d})  \n"
-                        f"Relevanz: **{score} / 100** \n"
-                        + (f"[🔗 Link]({link})" if link else "")
-                    )
-                    st.markdown("---")
+                # Hier rendern wir ebenfalls die vollwertigen Karten
+                for r_idx, (_, row) in enumerate(top_df.iterrows()):
+                    render_row_ui(row, f"rel_top_{r_idx}")
             else:
-                st.caption("Noch keine Relevanzwerte berechnet. Gib links eine Beschreibung ein und klicke auf „Relevanz berechnen“.")
+                st.caption("Gib links dein Thema ein und klicke auf Berechnen, um die Top 10 zu sehen.")
 
     st.markdown("---")
-    st.caption("Klicke links auf die Checkbox, um Einträge für den E-Mail-Versand auszuwählen.")
+    st.caption("Klicke auf die Checkboxen (egal in welcher Liste), um Einträge für den E-Mail-Versand auszuwählen.")
 
     # --- KORREKTUR 2 (Sync-Fix): Logik für "Alle auswählen/abwählen" ---
     # Wir müssen *vor* den Buttons eine Map aller DOIs und Keys erstellen.
@@ -1386,7 +1458,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     for i, (_, r) in enumerate(df.iterrows(), start=1):
         doi_norm = (r.get("doi", "") or "").lower()
         if doi_norm:
-            sel_key = _stable_sel_key(r, i)
+            sel_key = _stable_sel_key(r, str(i))
             doi_key_map[doi_norm] = sel_key
     # --- ENDE KORREKTUR 2 ---
 
@@ -1399,19 +1471,15 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     with action_col2:
         if st.button("Alle **Ergebnisse** auswählen", use_container_width=True):
             # --- KORREKTUR 3 (Sync-Fix): Button-Logik aktualisiert ---
-            for doi, key in doi_key_map.items():
-                st.session_state[key] = True  # Setzt den Status der individuellen Checkbox
-            st.session_state["selected_dois"] = set(doi_key_map.keys()) # Setzt die Master-Liste
+            # Wir setzen alle DOIs in die Selected List
+            st.session_state["selected_dois"] = set(doi_key_map.keys())
             st.rerun()
             # --- ENDE KORREKTUR 3 ---
 
     with action_col3:
         if st.button("Alle **Ergebnisse** abwählen", use_container_width=True):
             # --- KORREKTUR 4 (Sync-Fix): Button-Logik aktualisiert ---
-            for key in doi_key_map.values():
-                if key in st.session_state:
-                    st.session_state[key] = False # Setzt den Status der individuellen Checkbox
-            st.session_state["selected_dois"].clear() # Leert die Master-Liste
+            st.session_state["selected_dois"].clear()
             st.rerun()
             # --- ENDE KORREKTUR 4 ---
     
@@ -1460,96 +1528,10 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     
     # --- Ergebnis-Loop (Neue Karten v2) ---
     for i, (_, r) in enumerate(df.iterrows(), start=1):
-        doi_val = str(r.get("doi", "") or "")
-        doi_norm = doi_val.lower()
-        link_val = _to_http(r.get("link", "") or doi_val)
-        title = r.get("title", "") or "(ohne Titel)"
-        journal = r.get("journal", "") or ""
-        issued = r.get("issued", "") or ""
-        authors = r.get("authors", "") or ""
-        relevance = r.get("relevance_score", None)
-        abstract = r.get("abstract", "") or ""
-
-        left, right = st.columns([0.07, 0.93])
-        
-        # Checkbox in der linken Spalte
-        with left:
-            sel_key = _stable_sel_key(r, i) # 'i' startet bei 1, passt zu KORREKTUR 2
-            
-            if doi_norm: # Nur Checkbox anzeigen, wenn eine DOI vorhanden ist
-                # --- KORREKTUR 5 (Sync-Fix): Checkbox an on_change binden ---
-                st.checkbox(
-                    " ", # Leeres Label
-                    value=st.session_state.get(sel_key, False), # Holt den aktuellen Status
-                    key=sel_key,
-                    label_visibility="hidden", # Versteckt das leere Label
-                    on_change=toggle_doi,      # <--- WICHTIG
-                    args=(doi_norm, sel_key)   # <--- WICHTIG (übergibt DOI und KEY)
-                )
-                # --- ENDE KORREKTUR 5 ---
-
-        # Gestaltete Karte in der rechten Spalte
-        with right:
-            
-            # HTML-sichere Inhalte erstellen
-            title_safe = html.escape(title)
-            authors_safe = html.escape(authors)
-            
-            # Meta-Informationen (Journal, Datum, Relevanz)
-            meta_parts = [journal, issued]
-            if relevance is not None and relevance != "" and not pd.isna(relevance):
-                meta_parts.append(f"Relevanz: {relevance}/100")
-            
-            meta_text = " · ".join([x for x in meta_parts if x])
-            meta_safe = html.escape(meta_text)
-
-            
-            # URLs/Links (sollten nicht escaped werden)
-            doi_safe = _to_http(doi_val)
-            link_safe = link_val
-            
-            # Link-Text (sollte escaped werden)
-            doi_val_safe = html.escape(doi_val)
-            link_val_safe = html.escape(link_val)
-
-            # HTML für DOI und Link (nur wenn vorhanden)
-            doi_html = ""
-            if doi_val:
-                doi_html = '<b>DOI:</b> <a href="' + doi_safe + '" target="_blank">' + doi_val_safe + '</a><br>'
-                
-            link_html = ""
-            if link_val and link_val != doi_safe:
-                link_html = '<b>URL:</b> <a href="' + link_safe + '" target="_blank">' + link_val_safe + '</a><br>'
-            
-            # HTML für Abstract
-            if abstract:
-                abstract_safe = html.escape(abstract)
-                abstract_html = '<b>Abstract</b><br><p class="abstract">' + abstract_safe + '</p>'
-            else:
-                abstract_html = "<i>Kein Abstract vorhanden.</i>"
-
-            # Die komplette HTML-Karte (sicher mit '+' statt f-string)
-            card_html = (
-                '<div class="result-card">'
-                f'<h3>{title_safe}</h3>'
-                f'<div class="meta">{meta_safe}</div>'
-                f'<div class="authors">{authors_safe}</div>'
-                '<details>'
-                '<summary>Details anzeigen</summary>'
-                '<div>' +
-                doi_html +       # Variable sicher mit + einfügen
-                link_html +      # Variable sicher mit + einfügen
-                '<br>' +
-                abstract_html +  # Variable sicher mit + einfügen
-                '</div>'
-                '</details>'
-                '</div>'
-            )
-            st.markdown(card_html, unsafe_allow_html=True)
+        render_row_ui(r, str(i))
             
     st.divider()
     # --- NEU: Link "Hoch" und Anker "Unten" ---
-    # Wir nutzen den gleichen CSS-Hack, nur mit angepassten Rändern
     st.markdown(
         """
         <style>
