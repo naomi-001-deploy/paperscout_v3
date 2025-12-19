@@ -1289,6 +1289,7 @@ def toggle_doi(doi, key):
 if "results_df" in st.session_state and not st.session_state["results_df"].empty:
     df = st.session_state["results_df"].copy()
 
+    # --- Hilfsfunktion für Links (global definiert innerhalb des Blocks) ---
     def _to_http(u: str) -> str:
         if not isinstance(u, str): return ""
         u = u.strip()
@@ -1307,9 +1308,9 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     if "selected_dois" not in st.session_state:
         st.session_state["selected_dois"] = set()
 
-    # --------------------------------------
-    # 🧩 Themencluster (Beta) – OpenAI-Embeddings
-    # --------------------------------------
+    # ---------------------------------------------------------
+    # 🧩 Themencluster (Beta) - Nur sichtbar wenn Ergebnisse da
+    # ---------------------------------------------------------
     st.markdown("### 🧩 Themencluster (Beta)")
     key_openai = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not key_openai:
@@ -1317,323 +1318,103 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     else:
         cl_left, cl_right = st.columns([2, 3])
         with cl_left:
-            cluster_k = st.slider(
-                "Anzahl Cluster",
-                min_value=2,
-                max_value=10,
-                value=5,
-                step=1,
-                key="cluster_k_slider",
-                help="Je mehr Cluster, desto feiner die thematische Unterteilung."
-            )
-            cluster_min_docs = st.slider(
-                "Minimale Anzahl verwertbarer Artikel",
-                min_value=3,
-                max_value=20,
-                value=5,
-                step=1,
-                key="cluster_min_docs_slider",
-                help="Mindestens so viele Artikel mit Abstract oder ausreichend langem Titel."
-            )
+            cluster_k = st.slider("Anzahl Cluster", 2, 10, 5, key="cluster_k_slider")
+            cluster_min_docs = st.slider("Minimale Anzahl Artikel", 3, 20, 5, key="cluster_min_docs_slider")
             if st.button("🔍 Themencluster berechnen", use_container_width=True, key="btn_cluster_compute"):
-                clusters = build_clusters_openai(df, k=cluster_k, min_docs=cluster_min_docs)
-                if not clusters:
-                    st.warning("Konnte keine sinnvollen Themencluster bilden (zu wenig Text oder technische Probleme).")
-                else:
-                    st.session_state["topic_clusters_openai"] = clusters
-                    st.success(f"{len(clusters)} Cluster erstellt.")
+                with st.spinner("Berechne Cluster..."):
+                    clusters = build_clusters_openai(df, k=cluster_k, min_docs=cluster_min_docs)
+                    if not clusters:
+                        st.warning("Konnte keine sinnvollen Themencluster bilden.")
+                    else:
+                        st.session_state["topic_clusters_openai"] = clusters
+                        st.success(f"{len(clusters)} Cluster erstellt.")
 
         with cl_right:
             clusters = st.session_state.get("topic_clusters_openai") or []
             if clusters:
-                tab_labels = [c["label"] for c in clusters]
-                tabs = st.tabs(tab_labels)
+                tabs = st.tabs([c["label"] for c in clusters])
                 for tab, cluster in zip(tabs, clusters):
                     with tab:
                         st.caption("Beispieltext aus diesem Cluster:")
                         st.info(cluster["sample_text"])
                         sub_df = df.loc[cluster["indices"]] if cluster["indices"] else pd.DataFrame()
-                        st.caption(f"{len(sub_df)} Artikel im Cluster:")
                         for _, row in sub_df.iterrows():
-                            t = str(row.get("title", "") or "(ohne Titel)")
-                            a = str(row.get("authors", "") or "")
-                            j = str(row.get("journal", "") or "")
-                            d = str(row.get("issued", "") or "")
-                            link = _to_http(row.get("link", "") or row.get("doi", "") or "")
-
-                            st.markdown(
-                                f"**{t}**  \n"
-                                f"{a}  \n"
-                                f"*{j}* ({d})  \n"
-                                + (f"[🔗 Link]({link})" if link else "")
-                            )
-                            st.markdown("---")
+                            t_title = row.get("title", "(ohne Titel)")
+                            t_link = _to_http(row.get("link", "") or row.get("doi", ""))
+                            st.markdown(f"**{t_title}**" + (f" ([🔗 Link]({t_link}))" if t_link else ""))
             else:
-                st.caption("Noch keine Cluster berechnet. Wähle Parameter und klicke auf „Themencluster berechnen“.")
+                st.caption("Noch keine Cluster berechnet.")
 
-        # --------------------------------------
-    # 🎯 Relevanz-Rating (Beta)
-    # --------------------------------------
+    st.divider()
+
+    # ---------------------------------------------------------
+    # 🎯 Relevanz-Rating (Beta) - Nur sichtbar wenn Ergebnisse da
+    # ---------------------------------------------------------
     st.markdown("### 🎯 Relevanz-Rating (Beta)")
-
-    rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not rel_key:
-        st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (Tab 'Einstellungen').")
+    if not key_openai:
+        st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt.")
     else:
         rel_col_left, rel_col_right = st.columns([2, 3])
         with rel_col_left:
             relevance_query = st.text_area(
-                "Beschreibe kurz dein Forschungsinteresse / deine Fragestellung:",
+                "Beschreibe dein Forschungsinteresse:",
                 value=st.session_state.get("relevance_query", ""),
                 height=100,
-                help="Beispiel: 'transformational leadership, follower well-being, mediated by trust'",
                 key="relevance_query_input",
             )
+            min_len = st.slider("Minimale Textlänge", 20, 100, 30, key="relevance_min_text_len")
 
-            min_len = st.slider(
-                "Minimale Textlänge (Abstract/Titel), damit ein Artikel bewertet wird",
-                min_value=20,
-                max_value=100,
-                value=30,
-                step=5,
-                key="relevance_min_text_len",
-            )
-
-            if st.button("⭐ Relevanz berechnen", use_container_width=True, key="btn_compute_relevance"):
+            if st.button("⭐ Relevanz berechnen", use_container_width=True):
                 if not relevance_query.strip():
-                    st.warning("Bitte gib eine Beschreibung deines Forschungsinteresses ein.")
+                    st.warning("Bitte gib eine Beschreibung ein.")
                 else:
                     st.session_state["relevance_query"] = relevance_query.strip()
-                    rel_series = compute_relevance_scores(
-                        df,
-                        relevance_query.strip(),
-                        min_text_len=min_len,
-                    )
-                    if rel_series is None:
-                        st.warning("Konnte keine Relevanzwerte berechnen (kein Text oder kein API-Key).")
-                    else:
-                        # In DataFrame übernehmen
-                        df["relevance_score"] = rel_series
-                        st.session_state["results_df"] = df
-                        st.success("Relevanzwerte wurden berechnet und den Ergebnissen hinzugefügt.")
+                    with st.spinner("KI bewertet Relevanz..."):
+                        rel_series = compute_relevance_scores(df, relevance_query.strip(), min_text_len=min_len)
+                        if rel_series is not None:
+                            st.session_state["results_df"]["relevance_score"] = rel_series
+                            st.success("Relevanzwerte berechnet!")
+                            st.rerun()
 
         with rel_col_right:
-            if "relevance_score" in df.columns:
-                st.caption("Top 10 nach Relevanz:")
-                top_df = df.sort_values("relevance_score", ascending=False).head(10)
-                for _, row in top_df.iterrows():
-                    t = str(row.get("title", "") or "(ohne Titel)")
-                    a = str(row.get("authors", "") or "")
-                    j = str(row.get("journal", "") or "")
-                    d = str(row.get("issued", "") or "")
+            if "relevance_score" in st.session_state["results_df"].columns:
+                st.caption("Top 10 nach Relevanz (hier auswählen für E-Mail):")
+                top_df = st.session_state["results_df"].sort_values("relevance_score", ascending=False).head(10)
+                
+                for i, (_, row) in enumerate(top_df.iterrows(), start=5000):
+                    doi_norm = str(row.get("doi", "")).lower()
                     score = row.get("relevance_score", 0)
-                    link = _to_http(row.get("link", "") or row.get("doi", "") or "")
-
-                    st.markdown(
-                        f"**{t}**  \n"
-                        f"{a}  \n"
-                        f"*{j}* ({d})  \n"
-                        f"Relevanz: **{score} / 100**  \n"
-                        + (f"[🔗 Link]({link})" if link else "")
-                    )
-                    st.markdown("---")
+                    rel_link = _to_http(row.get("link", "") or row.get("doi", ""))
+                    
+                    rel_chk_key = f"rel_sel_{i}_{hashlib.md5(doi_norm.encode()).hexdigest()[:8]}"
+                    
+                    r_check, r_content = st.columns([0.1, 0.9])
+                    with r_check:
+                        st.checkbox(
+                            " ", 
+                            value=doi_norm in st.session_state["selected_dois"],
+                            key=rel_chk_key,
+                            label_visibility="hidden",
+                            on_change=toggle_doi,
+                            args=(doi_norm, rel_chk_key)
+                        )
+                    with r_content:
+                        st.markdown(f"**{row.get('title', '')}**\nScore: **{score}/100**" + (f" | [🔗 Link]({rel_link})" if rel_link else ""))
+                    st.markdown('<div style="border-bottom:1px solid #ddd; opacity:0.2; margin: 5px 0;"></div>', unsafe_allow_html=True)
             else:
-                st.caption("Noch keine Relevanzwerte berechnet. Gib oben eine Beschreibung ein und klicke auf „Relevanz berechnen“.")
+                st.caption("Noch keine Relevanzwerte berechnet.")
 
+    st.divider()
 
+    # --- Fortsetzung der regulären Ergebnisliste ---
     st.caption("Klicke links auf die Checkbox, um Einträge für den E-Mail-Versand auszuwählen.")
 
-    # --- KORREKTUR 2 (Sync-Fix): Logik für "Alle auswählen/abwählen" ---
-    # Wir müssen *vor* den Buttons eine Map aller DOIs und Keys erstellen.
     doi_key_map = {}
     for i, (_, r) in enumerate(df.iterrows(), start=1):
         doi_norm = (r.get("doi", "") or "").lower()
         if doi_norm:
             sel_key = _stable_sel_key(r, i)
             doi_key_map[doi_norm] = sel_key
-    # --- ENDE KORREKTUR 2 ---
-
-
-    # --- Aktionen: Auswahl & Download ---
-    action_col1, action_col2, action_col3 = st.columns([1, 1, 1])
-    with action_col1:
-        st.metric(label="Aktuell ausgewählt", value=f"{len(st.session_state['selected_dois'])} / {len(df)}")
-    
-    with action_col2:
-        if st.button("Alle **Ergebnisse** auswählen", use_container_width=True):
-            # --- KORREKTUR 3 (Sync-Fix): Button-Logik aktualisiert ---
-            for doi, key in doi_key_map.items():
-                st.session_state[key] = True  # Setzt den Status der individuellen Checkbox
-            st.session_state["selected_dois"] = set(doi_key_map.keys()) # Setzt die Master-Liste
-            st.rerun()
-            # --- ENDE KORREKTUR 3 ---
-
-    with action_col3:
-        if st.button("Alle **Ergebnisse** abwählen", use_container_width=True):
-            # --- KORREKTUR 4 (Sync-Fix): Button-Logik aktualisiert ---
-            for key in doi_key_map.values():
-                if key in st.session_state:
-                    st.session_state[key] = False # Setzt den Status der individuellen Checkbox
-            st.session_state["selected_dois"].clear() # Leert die Master-Liste
-            st.rerun()
-            # --- ENDE KORREKTUR 4 ---
-    
-    st.markdown("---") # Visueller Trenner
-    # --- NEU: Fixierte Pfeil-Navigation (Start/Ende) ---
-    FIXED_NAV_HTML = """
-    <style>
-    .fixed-nav {
-        position: fixed;
-        bottom: 1.5rem; /* Abstand von unten */
-        left: 50%;
-        transform: translateX(-50%); /* Zentrierung */
-        background-color: var(--secondary-background-color);
-        border: 1px solid var(--border-color, var(--gray-300));
-        border-radius: 25px; /* Pillenform */
-        padding: 0.5rem 1rem;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        z-index: 9999; /* Über allem anderen */
-        opacity: 0.9; /* Leichte Transparenz */
-    }
-    /* Fallback für Darkmode-Rand */
-    html.dark .fixed-nav {
-         border: 1px solid var(--border-color, var(--gray-800));
-    }
-    .fixed-nav a {
-        display: inline-block;
-        text-decoration: none;
-        color: var(--text-color);
-        font-size: 1.25rem; /* Größere Pfeile */
-        margin: 0 0.75rem;
-        transition: transform 0.1s ease-in-out;
-    }
-    .fixed-nav a:hover {
-        transform: scale(1.2);
-        color: var(--primary-color); /* Akzentfarbe beim Hover */
-    }
-    </style>
-    
-    <div class="fixed-nav">
-        <a href="#results_top" title="Zum Anfang der Liste">⬆️</a>
-        <a href="#actions_bottom" title="Zum E-Mail Versand">⬇️</a>
-    </div>
-    """
-    st.markdown(FIXED_NAV_HTML, unsafe_allow_html=True)
-    # --- ENDE NEU ---
-    
-    # --- Ergebnis-Loop (Neue Karten v2) ---
-    for i, (_, r) in enumerate(df.iterrows(), start=1):
-        doi_val = str(r.get("doi", "") or "")
-        doi_norm = doi_val.lower()
-        link_val = _to_http(r.get("link", "") or doi_val)
-        title = r.get("title", "") or "(ohne Titel)"
-        journal = r.get("journal", "") or ""
-        issued = r.get("issued", "") or ""
-        authors = r.get("authors", "") or ""
-        relevance = r.get("relevance_score", None)
-        abstract = r.get("abstract", "") or ""
-
-        left, right = st.columns([0.07, 0.93])
-        
-        # Checkbox in der linken Spalte
-        with left:
-            sel_key = _stable_sel_key(r, i) # 'i' startet bei 1, passt zu KORREKTUR 2
-            
-            if doi_norm: # Nur Checkbox anzeigen, wenn eine DOI vorhanden ist
-                # --- KORREKTUR 5 (Sync-Fix): Checkbox an on_change binden ---
-                st.checkbox(
-                    " ", # Leeres Label
-                    value=st.session_state.get(sel_key, False), # Holt den aktuellen Status
-                    key=sel_key,
-                    label_visibility="hidden", # Versteckt das leere Label
-                    on_change=toggle_doi,      # <--- WICHTIG
-                    args=(doi_norm, sel_key)   # <--- WICHTIG (übergibt DOI und KEY)
-                )
-                # --- ENDE KORREKTUR 5 ---
-
-        # Gestaltete Karte in der rechten Spalte
-        with right:
-            
-            # HTML-sichere Inhalte erstellen
-            title_safe = html.escape(title)
-            authors_safe = html.escape(authors)
-            
-            # Meta-Informationen (Journal, Datum, Relevanz)
-            meta_parts = [journal, issued]
-            if relevance is not None and relevance != "" and not pd.isna(relevance):
-                meta_parts.append(f"Relevanz: {relevance}/100")
-            
-            meta_text = " · ".join([x for x in meta_parts if x])
-            meta_safe = html.escape(meta_text)
-
-            
-            # URLs/Links (sollten nicht escaped werden)
-            doi_safe = _to_http(doi_val)
-            link_safe = link_val
-            
-            # Link-Text (sollte escaped werden)
-            doi_val_safe = html.escape(doi_val)
-            link_val_safe = html.escape(link_val)
-
-            # HTML für DOI und Link (nur wenn vorhanden)
-            doi_html = ""
-            if doi_val:
-                doi_html = '<b>DOI:</b> <a href="' + doi_safe + '" target="_blank">' + doi_val_safe + '</a><br>'
-                
-            link_html = ""
-            if link_val and link_val != doi_safe:
-                link_html = '<b>URL:</b> <a href="' + link_safe + '" target="_blank">' + link_val_safe + '</a><br>'
-            
-            # HTML für Abstract
-            if abstract:
-                abstract_safe = html.escape(abstract)
-                abstract_html = '<b>Abstract</b><br><p class="abstract">' + abstract_safe + '</p>'
-            else:
-                abstract_html = "<i>Kein Abstract vorhanden.</i>"
-
-            # Die komplette HTML-Karte (sicher mit '+' statt f-string)
-            card_html = (
-                '<div class="result-card">'
-                f'<h3>{title_safe}</h3>'
-                f'<div class="meta">{meta_safe}</div>'
-                f'<div class="authors">{authors_safe}</div>'
-                '<details>'
-                '<summary>Details anzeigen</summary>'
-                '<div>' +
-                doi_html +       # Variable sicher mit + einfügen
-                link_html +      # Variable sicher mit + einfügen
-                '<br>' +
-                abstract_html +  # Variable sicher mit + einfügen
-                '</div>'
-                '</details>'
-                '</div>'
-            )
-            st.markdown(card_html, unsafe_allow_html=True)
-            
-    st.divider()
-    # --- NEU: Link "Hoch" und Anker "Unten" ---
-    # Wir nutzen den gleichen CSS-Hack, nur mit angepassten Rändern
-    st.markdown(
-        """
-        <style>
-            .link-container-bottom {
-                text-align: right;
-                margin-bottom: -1.5rem;
-            }
-            .link-container-bottom a {
-                text-decoration: none;
-                font-size: 0.9rem;
-            }
-        </style>
-        <div class="link-container-bottom">
-            <a href='#results_top'>⬆️ Zum Anfang der Liste springen</a>
-        </div>
-        """, 
-        unsafe_allow_html=True
-    )
-    # Der Anker, zu dem der "Runter"-Link springt
-    st.markdown("<a id='actions_bottom'></a>", unsafe_allow_html=True)
-    # --- ENDE NEU ---
 
     # --- Download & E-Mail (neu gruppiert) ---
     st.subheader("🏁 Aktionen: Download & Versand")
