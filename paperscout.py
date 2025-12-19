@@ -822,13 +822,17 @@ def compute_relevance_scores(
 
 
 # =========================
-# E-Mail Versand (SMTP)
+# E-Mail Versand (SMTP) - JETZT MIT HTML-DESIGN
 # =========================
 def send_doi_email(
     to_email: str,
     records: List[Dict[str, Any]],
     sender_display: Optional[str] = None
 ) -> tuple[bool, str]:
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    
     host = os.getenv("EMAIL_HOST")
     port = int(os.getenv("EMAIL_PORT", "587"))
     user = os.getenv("EMAIL_USER")
@@ -839,37 +843,70 @@ def send_doi_email(
     use_ssl = os.getenv("EMAIL_USE_SSL", "false").lower() in ("1","true","yes","y")
 
     if not (host and port and sender_addr and user and password):
-        return False, "SMTP nicht konfiguriert (EMAIL_HOST/PORT/USER/PASSWORD/EMAIL_FROM)."
+        return False, "SMTP nicht konfiguriert."
 
     display_name = (sender_display or "").strip() or default_name
 
-    lines: List[str] = []
-    for rec in records:
-        doi = str(rec.get("doi", "") or "")
-        title = str(rec.get("title", "") or "(ohne Titel)")
-        authors = str(rec.get("authors", "") or "Autor:innen unbekannt")
-        journal = str(rec.get("journal", "") or "Journal unbekannt")
-        issued = str(rec.get("issued", "") or "")
+    # --- HTML Tabellen-Inhalt generieren ---
+    table_rows = ""
+    for i, rec in enumerate(records):
+        bg_color = "#ffffff" if i % 2 == 0 else "#f9f9f9" # Zebra-Streifen
+        title = html.escape(str(rec.get("title", "(ohne Titel)")))
+        authors = html.escape(str(rec.get("authors", "Autor:innen unbekannt")))
+        journal = html.escape(str(rec.get("journal", "Journal unbekannt")))
+        issued = html.escape(str(rec.get("issued", "")))
+        doi_url = str(rec.get("doi", ""))
+        
+        table_rows += f"""
+        <tr style="background-color: {bg_color};">
+            <td style="padding: 12px; border-bottom: 1px solid #eeeeee;">
+                <div style="font-weight: bold; color: #1f77b4; font-size: 16px; margin-bottom: 4px;">{title}</div>
+                <div style="font-size: 14px; color: #333333; margin-bottom: 4px;">{authors}</div>
+                <div style="font-size: 12px; color: #666666;">
+                    <i>{journal}</i> {f'({issued})' if issued else ''} | 
+                    <a href="{doi_url}" style="color: #ff4b4b; text-decoration: none; font-weight: bold;">DOI Link</a>
+                </div>
+            </td>
+        </tr>
+        """
 
-        line = f"- {doi} | {title} | {authors} | {journal}{f' ({issued})' if issued else ''}"
-        lines.append(line)
+    # --- Das HTML-Template ---
+    html_body = f"""
+    <html>
+    <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 800px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
+            <div style="background-color: #ff4b4b; padding: 20px; text-align: center; color: white;">
+                <h1 style="margin: 0; font-size: 24px;">🕵🏻 paperscout Report</h1>
+                <p style="margin: 5px 0 0 0; opacity: 0.9;">Ausgewählt von: {display_name}</p>
+            </div>
+            <div style="padding: 20px;">
+                <p>Hallo,</p>
+                <p>hier ist deine Übersicht der <strong>{len(records)} ausgewählten Artikel</strong> aus dem Paperscout:</p>
+                
+                <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+                    {table_rows}
+                </table>
+                
+                <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eeeeee; font-size: 12px; color: #999; text-align: center;">
+                    Gesendet via <strong>paperscout UI</strong> am {datetime.now().strftime('%d.%m.%Y um %H:%M')} Uhr.
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
 
-    body_lines = [
-        "Hallo,",
-        "",
-        f"ausgewählt von: {display_name}",
-        "",
-        "Hier ist die Liste der ausgewählten Artikel:",
-        "",
-        *lines,
-        "",
-        "Viele Grüße",
-        display_name,
-    ]
-    msg = MIMEText("\n".join(body_lines), _charset="utf-8")
+    # E-Mail Objekt erstellen
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = f"[paperscout] {len(records)} Artikel — {display_name}"
     msg["From"] = formataddr((display_name, sender_addr))
     msg["To"] = to_email
+
+    # Plaintext-Fallback für alte E-Mail-Clients
+    text_fallback = f"Hallo,\n\nhier sind {len(records)} Artikel für dich.\n(Bitte HTML-Ansicht aktivieren für das volle Design.)"
+    
+    msg.attach(MIMEText(text_fallback, "plain"))
+    msg.attach(MIMEText(html_body, "html"))
 
     try:
         if use_ssl:
@@ -885,11 +922,9 @@ def send_doi_email(
                     server.ehlo()
                 server.login(user, password)
                 server.sendmail(sender_addr, [to_email], msg.as_string())
-
-        return True, "E-Mail gesendet."
+        return True, "E-Mail mit neuem Design gesendet."
     except Exception as e:
         return False, f"E-Mail Versand fehlgeschlagen: {e}"
-
 # =========================
 # =========================
 # NEUE UI (v3) - JETZT MIT DARK MODE
