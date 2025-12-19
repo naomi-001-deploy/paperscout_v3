@@ -1,11 +1,8 @@
 # UI-Update: Modernes Design mit CSS-Karten und Tabs.
-# BUGFIX: StreamlitDuplicateElementId durch eindeutige Button-Labels behoben.
-# BUGFIX: HTML-Escaping-Problem im Abstract (f-string-Konflikt) endgültig behoben.
-# BUGFIX: Synchronisierung zwischen "Alle auswählen"-Buttons und individuellen Checkboxen.
-# FEATURE (NEU): Dynamische Farbgebung (Dark Mode / Light Mode) durch Streamlit CSS-Variablen.
-# FEATURE (UPDATE): Themencluster jetzt untereinander als ausklappbare Karten mit Checkboxen.
-# FEATURE (UPDATE): Relevanz-Liste mit Checkboxen und ausklappbaren Abstracts.
-# FIX (CRITICAL): Robustes Laden des API-Keys (Direktzugriff auf Secrets statt Env-Copy).
+# LOGIC-RESTORE: API-Key-Logik exakt wie in Version 6 (Hard Environment Set).
+# FEATURE: Zentrale Render-Funktion für konsistente Karten (Relevanz, Cluster, Hauptliste).
+# FEATURE: Checkboxen und Klapp-Abstracts überall verfügbar.
+# FIX: Synchronisierung der Auswahl.
 
 import os, re, html, json, smtplib, ssl, hashlib
 from email.mime.text import MIMEText
@@ -18,6 +15,37 @@ from io import BytesIO
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any
 from urllib.parse import quote_plus
+
+# ==========================================
+# 1. API-KEY LOGIK (WIEDERHERGESTELLT VON V6)
+# ==========================================
+# Dieser Block muss ganz oben stehen, bevor irgendwelche Funktionen definiert werden.
+# Er zwingt den Secret-Key in die Umgebungsvariablen, genau wie im alten Code.
+# ------------------------------------------
+try:
+    if "PAPERSCOUT_OPENAI_API_KEY" in st.secrets:
+        key_val = str(st.secrets["PAPERSCOUT_OPENAI_API_KEY"]).strip()
+        # Entferne eventuelle Anführungszeichen, falls sie fälschlicherweise im Wert stehen
+        key_val = key_val.strip('"').strip("'")
+        if key_val:
+            os.environ["PAPERSCOUT_OPENAI_API_KEY"] = key_val
+            # WICHTIG: Auch die Standard-Variable setzen für Libraries
+            os.environ["OPENAI_API_KEY"] = key_val
+except Exception:
+    pass
+
+# Fallback: Falls der User "OPENAI_API_KEY" direkt in den Secrets nutzt
+try:
+    if "OPENAI_API_KEY" in st.secrets:
+        key_val = str(st.secrets["OPENAI_API_KEY"]).strip()
+        key_val = key_val.strip('"').strip("'")
+        if key_val:
+            os.environ["OPENAI_API_KEY"] = key_val
+            os.environ["PAPERSCOUT_OPENAI_API_KEY"] = key_val
+except Exception:
+    pass
+# ==========================================
+
 
 # --- Excel-Engine Detection (xlsxwriter / openpyxl) ---
 try:
@@ -50,60 +78,34 @@ def _stable_sel_key(r: dict, suffix: str) -> str:
     h = hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
     return f"sel_card_{h}_{suffix}"
 
-# =========================
-# ZENTRALE KEY-VERWALTUNG (ROBUST)
-# =========================
-def get_openai_key() -> Optional[str]:
-    """
-    Sucht den API Key in SessionState (Eingabe), Secrets oder Environment.
-    Priorität: 
-    1. Eingabefeld (Session State 'user_openai_key')
-    2. st.secrets["PAPERSCOUT_OPENAI_API_KEY"]
-    3. st.secrets["OPENAI_API_KEY"]
-    4. os.environ
-    """
-    # 1. User Input aus dieser Session
-    if "user_openai_key" in st.session_state and st.session_state["user_openai_key"]:
-        return str(st.session_state["user_openai_key"]).strip()
-    
-    # 2. Secrets (Streamlit Cloud)
-    # Wir greifen direkt zu, ohne try/except Block um das ganze Skript
-    if hasattr(st, "secrets"):
-        try:
-            if "PAPERSCOUT_OPENAI_API_KEY" in st.secrets:
-                return str(st.secrets["PAPERSCOUT_OPENAI_API_KEY"]).strip()
-            if "OPENAI_API_KEY" in st.secrets:
-                return str(st.secrets["OPENAI_API_KEY"]).strip()
-        except Exception:
-            pass
-            
-    # 3. Environment Variables (Lokales Docker/Server Setup)
-    return os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-
-# --- SMTP aus Secrets/Env laden ---
+# --- SMTP aus Secrets/Env laden (robust) ---
 def setup_smtp_from_secrets_or_env():
-    # Helper um Secrets sicher zu lesen
+    try:
+        import streamlit as st
+        secrets_obj = getattr(st, "secrets", None)
+        try:
+            _ = secrets_obj.get("_probe_", None) if hasattr(secrets_obj, "get") else None
+        except Exception:
+            secrets_obj = None
+    except Exception:
+        secrets_obj = None
+
     def read_secret(key: str) -> Optional[str]:
-        if hasattr(st, "secrets"):
-            try:
-                # Prüfen ob Key existiert, um Fehler zu vermeiden
-                if key in st.secrets:
-                    return str(st.secrets[key]).strip()
-            except Exception:
-                return None
-        return None
+        if secrets_obj is None:
+            return None
+        try:
+            val = secrets_obj[key]
+            val = str(val).strip()
+            return val if val else None
+        except Exception:
+            return None
 
     def setdef(key: str, default: Optional[str] = None):
-        # 1. Versuche Secret
         val = read_secret(key)
-        # 2. Versuche Env
         if val is None:
             val = os.environ.get(key)
-        # 3. Default
         if val is None:
             val = default
-        
-        # Setze Env Var für spätere Nutzung
         if val is not None:
             os.environ[key] = str(val)
 
@@ -122,6 +124,13 @@ setup_smtp_from_secrets_or_env()
 # App-Konfiguration
 # =========================
 st.set_page_config(page_title="paperscout UI", layout="wide")
+
+HARDCODED_KEY = ""
+HARDCODED_CROSSREF_MAIL = ""
+if HARDCODED_KEY:
+    os.environ["PAPERSCOUT_OPENAI_API_KEY"] = HARDCODED_KEY
+if HARDCODED_CROSSREF_MAIL:
+    os.environ["CROSSREF_MAILTO"] = HARDCODED_CROSSREF_MAIL
 
 # =========================
 # HTTP Basics
@@ -172,15 +181,8 @@ def fetch_html(url: str, timeout: float = 25.0) -> Optional[str]:
     except Exception:
         return None
 
-        
 # --- Proxy-Unterstützung (HTTP/HTTPS/SOCKS) ---
 def _proxy_dict() -> Optional[dict]:
-    """
-    Liest einen optionalen Proxy aus:
-    - ENV: PAPERSCOUT_PROXY (z. B. 'http://user:pass@host:port' oder 'socks5://host:1080')
-    - Session: st.session_state['proxy_url'] (wird im UI gesetzt)
-    - Gibt ein httpx-kompatibles proxies-Dict zurück oder None.
-    """
     p = (st.session_state.get("proxy_url") or
          os.getenv("PAPERSCOUT_PROXY") or "").strip()
     if not p:
@@ -188,22 +190,14 @@ def _proxy_dict() -> Optional[dict]:
     return {"http": p, "https": p}
 
 def _http_client(timeout: float, headers: dict | None = None) -> httpx.Client:
-    """
-    Einheitlicher httpx-Client:
-    - http2=False (Publisher liefern unter H2 anderes Markup)
-    - follow_redirects=True
-    - optionaler Proxy (HTTP/HTTPS/SOCKS)
-    - Cookie-Handling (NEU/VERBESSERT)
-    """
     return httpx.Client(
         timeout=timeout,
         headers=headers or _headers(),
         follow_redirects=True,
         http2=False,
         proxies=_proxy_dict(),
-        cookies=httpx.Cookies(),  # <-- VERBESSERUNG
+        cookies=httpx.Cookies(),
     )
-
 
 TAG_STRIP = re.compile(r"<[^>]+>")
 def _clean_text(s: str) -> str:
@@ -254,9 +248,6 @@ JOURNAL_ISSN: Dict[str, str] = {
     "Management Teaching Review": "2379-2981",
 }
 
-# =========================
-# Crossref – erweiterte Fallbacks (ALT_ISSN + flexibler fetch_crossref_any)
-# =========================
 ALT_ISSN: Dict[str, List[str]] = {
     "Journal of Applied Psychology": ["1939-1854"],
     "Journal of Personality and Social Psychology": ["1939-1315"],
@@ -274,18 +265,9 @@ ALT_ISSN: Dict[str, List[str]] = {
     "Science": ["1095-9203"],
     "Nature": ["1476-4687"],
     "Administrative Science Quarterly": ["1930-3815"],
-    # Management Teaching Review: keine separate E-ISSN nötig
 }
 
 def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: int) -> List[Dict[str, Any]]:
-    """
-    Robustere Crossref-Abfrage:
-    - Probiert verschiedene Datumsfilter.
-    - Fällt zurück auf Container-Title-Query und ALT_ISSN.
-    - Letzter Notanker: ohne Datumsfilter (wir filtern client-seitig).
-    - Filtert auf type:journal-article.
-    - harter Nachfilter: exakter Container-Title ODER ISSN-Match.
-    """
     mailto = os.getenv("CROSSREF_MAILTO") or "you@example.com"
     base_filters = [
         ("from-pub-date", "until-pub-date"),
@@ -383,11 +365,6 @@ def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: in
 
     return []
 
-# =========================
-# KEIN TOC-SCRAPING MEHR
-# =========================
-
-
 # -------------------------
 # Crossref / Semantic Scholar / OpenAlex / OpenAI
 # -------------------------
@@ -427,7 +404,8 @@ def fetch_openalex(doi:str)->Optional[Dict[str, Any]]:
     except Exception:return None
 
 def ai_extract_metadata_from_html(html_text:str,model:str)->Optional[Dict[str, Any]]:
-    key = get_openai_key() # <--- NEU: Nutzt zentrale Funktion
+    # KEY-CHANGE: Hier wieder direkt auf os.environ zugreifen
+    key=os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not key:return None
     try:
         from openai import OpenAI
@@ -451,7 +429,7 @@ def ai_extract_metadata_from_html(html_text:str,model:str)->Optional[Dict[str, A
     except Exception:return None
 
 # -------------------------
-# GENERISCHE ABSTRACT-EXTRAKTION AUS HTML (AMJ/Highwire, Wiley, SAGE, APA)
+# GENERISCHE ABSTRACT-EXTRAKTION AUS HTML
 # -------------------------
 def extract_abstract_from_html_simple(html_text: str) -> Optional[str]:
     if not html_text:
@@ -477,9 +455,6 @@ def extract_abstract_from_html_simple(html_text: str) -> Optional[str]:
         return _clean_text(m.group(1))
     return None
 
-# -------------------------
-# ScienceDirect / Elsevier – direkter JSON-Endpoint
-# -------------------------
 def fetch_sciencedirect_abstract(doi_or_url: str) -> Optional[str]:
     m = re.search(r"(S\d{16,})", doi_or_url)
     pii = m.group(1) if m else None
@@ -502,10 +477,6 @@ def fetch_sciencedirect_abstract(doi_or_url: str) -> Optional[str]:
         return _clean_text(abstract_html)
     except Exception:
         return None
-
-# -------------------------
-# KEINE TOC-FILTER-TOOLS MEHR
-# -------------------------
 
 # =========================
 # Hauptpipeline
@@ -539,12 +510,8 @@ def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) 
                 break
 
         if not rec.get("abstract"):
-            # Prüfen, ob "sciencedirect" in der URL ist ODER ob das Journal
-            # (gemäß ISSN) ein Sciencedirect-Journal ist.
             is_sd_url = "sciencedirect.com" in (rec.get("url","") or "")
-            # (Wir haben JOURNAL_REGISTRY nicht mehr, also machen wir einen
-            # Workaround und checken, ob die ISSN zu TLQ gehört)
-            is_sd_journal = (issn == "1048-9843") # The Leadership Quarterly
+            is_sd_journal = (issn == "1048-9843") 
             
             if is_sd_url or is_sd_journal:
                 abs_text = fetch_sciencedirect_abstract(rec.get("url") or rec.get("doi",""))
@@ -592,7 +559,8 @@ def dedup(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # Themencluster mit OpenAI-Embeddings (ohne sklearn)
 # =========================
 def _get_embedding(text: str, model: str = "text-embedding-3-small") -> List[float]:
-    key = get_openai_key() # <--- NEU: Nutzt zentrale Funktion
+    # KEY-CHANGE: Hier wieder direkt auf os.environ zugreifen
+    key=os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not key:
         return []
     try:
@@ -609,10 +577,6 @@ def _get_embedding(text: str, model: str = "text-embedding-3-small") -> List[flo
         return []
 
 def _kmeans(vectors: List[List[float]], k: int, max_iter: int = 20) -> List[int]:
-    """
-    Simple K-Means Implementierung auf Basis euklidischer Distanz.
-    Gibt eine Liste von Cluster-Labels (gleiche Länge wie vectors) zurück.
-    """
     import random
     if not vectors or k <= 0:
         return []
@@ -652,11 +616,8 @@ def _kmeans(vectors: List[List[float]], k: int, max_iter: int = 20) -> List[int]
     return labels
 
 def _ai_name_cluster(examples: List[str], model: str = "gpt-4o-mini") -> Optional[str]:
-    """
-    Erzeugt mit OpenAI einen kurzen, sprechenden Clusternamen (3–6 Wörter, deutsch)
-    basierend auf einigen Beispieltexten (Abstracts/Titel) aus dem Cluster.
-    """
-    key = get_openai_key() # <--- NEU: Nutzt zentrale Funktion
+    # KEY-CHANGE: Hier wieder direkt auf os.environ zugreifen
+    key=os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not key:
         return None
 
@@ -693,7 +654,6 @@ def _ai_name_cluster(examples: List[str], model: str = "gpt-4o-mini") -> Optiona
             temperature=0.2,
         )
         label = (resp.choices[0].message.content or "").strip()
-        # Evtl. Anführungszeichen entfernen
         label = re.sub(r'^[\"“”]+|[\"“”]+$', '', label).strip()
         return label or None
     except Exception:
@@ -701,11 +661,6 @@ def _ai_name_cluster(examples: List[str], model: str = "gpt-4o-mini") -> Optiona
 
 
 def build_clusters_openai(df: pd.DataFrame, k: int = 5, min_docs: int = 5) -> Optional[List[Dict[str, Any]]]:
-    """
-    Bildet Themencluster basierend auf OpenAI-Embeddings.
-    - nutzt Abstract (falls vorhanden), sonst Titel
-    - gibt Cluster mit Indices + Beispieltext zurück
-    """
     if df.empty:
         return None
 
@@ -760,7 +715,8 @@ def build_clusters_openai(df: pd.DataFrame, k: int = 5, min_docs: int = 5) -> Op
     if not clusters:
         return None
 
-    key = get_openai_key() # <--- NEU: Nutzt zentrale Funktion
+    # KEY-CHANGE: Hier wieder direkt auf os.environ zugreifen
+    key=os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if key:
         # Mapping Index -> Text, damit wir pro Cluster die Beispiele holen können
         idx_to_text = {idx: txt for idx, txt in zip(clean_indices, clean_texts)}
@@ -780,7 +736,6 @@ def build_clusters_openai(df: pd.DataFrame, k: int = 5, min_docs: int = 5) -> Op
 # Relevanz-Rating mit OpenAI-Embeddings (Berechnung & UI)
 # =========================
 def _to_http(u: str) -> str:
-    """Hilfsfunktion zur Formatierung von DOIs/Links."""
     if not isinstance(u, str): return ""
     u = u.strip()
     if u.startswith("http://doi.org/"): return "https://" + u[len("http://"):]
@@ -804,7 +759,6 @@ def compute_relevance_scores(
     min_text_len: int = 30,
     model: str = "text-embedding-3-small",
 ) -> Optional[pd.Series]:
-    """Berechnet eine Relevanzbewertung (0–100) basierend auf Embedding-Ähnlichkeit."""
     query_text = (query_text or "").strip()
     if not query_text:
         return None
@@ -1107,23 +1061,14 @@ with tab2:
     ai_model = st.text_input("OpenAI Modell (für Abstract-Fallback)", value="gpt-4o-mini")
     
     st.markdown("#### API-Keys & E-Mails")
+    api_key_input = st.text_input("🔑 OpenAI API-Key", type="password", value="", help="Optional. Wird für Artikel ohne Abstract benötigt.")
     
-    # -----------------------------------------------------
-    # ROBUSTER API-KEY UI BEREICH
-    # -----------------------------------------------------
-    current_key = get_openai_key()
-    if current_key:
-        st.success("✅ OpenAI API-Key aktiv (aus Secrets oder Eingabe).")
-    else:
-        st.warning("⚠️ Kein API-Key gefunden. Bitte in Secrets hinterlegen oder hier eingeben.")
-
-    # Eingabefeld (Überschreibt Secrets temporär)
-    user_key_input = st.text_input("🔑 Temporären Key eingeben (optional)", type="password", help="Überschreibt den Key aus den Secrets für diese Sitzung.")
-    if user_key_input:
-        st.session_state["user_openai_key"] = user_key_input
-        st.rerun()
-    # -----------------------------------------------------
-
+    # Manuelle Eingabe auch wieder wie im alten Code unterstützen (Env Variable setzen)
+    if api_key_input:
+        os.environ["PAPERSCOUT_OPENAI_API_KEY"] = api_key_input
+        os.environ["OPENAI_API_KEY"] = api_key_input # Für Libraries
+        st.caption("API-Key für diese Sitzung gesetzt.")
+        
     crossref_mail = st.text_input("📧 Crossref Mailto (empfohlen)", value=os.getenv("CROSSREF_MAILTO", ""), help="Eine E-Mail-Adresse verbessert die Zuverlässigkeit der Crossref-API.")
     if crossref_mail:
         os.environ["CROSSREF_MAILTO"] = crossref_mail
@@ -1352,7 +1297,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # 🧩 Themencluster (Beta) – OpenAI-Embeddings
     # --------------------------------------
     st.markdown("### 🧩 Themencluster (Beta)")
-    key_openai = get_openai_key() # <--- NEU: Robuster Zugriff
+    key_openai = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not key_openai:
         st.info("Bitte trage einen OpenAI API-Key ein (Tab 'Einstellungen'), um Themencluster zu berechnen.")
     else:
@@ -1415,7 +1360,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # --------------------------------------
     st.markdown("### 🎯 Relevanz-Rating (Beta)")
 
-    rel_key = get_openai_key() # <--- NEU: Robuster Zugriff
+    rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not rel_key:
         st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (Tab 'Einstellungen').")
     else:
