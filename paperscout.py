@@ -765,6 +765,15 @@ def build_clusters_openai(df: pd.DataFrame, k: int = 5, min_docs: int = 5) -> Op
 # =========================
 # Relevanz-Rating mit OpenAI-Embeddings (Berechnung & UI)
 # =========================
+def _to_http(u: str) -> str:
+    """Hilfsfunktion zur Formatierung von DOIs/Links."""
+    if not isinstance(u, str): return ""
+    u = u.strip()
+    if u.startswith("http://doi.org/"): return "https://" + u[len("http://"):]
+    if u.startswith("http"): return u
+    if u.startswith("10."): return "https://doi.org/" + u
+    return u
+
 def _cosine_sim(v1: List[float], v2: List[float]) -> float:
     if not v1 or not v2 or len(v1) != len(v2):
         return 0.0
@@ -824,7 +833,7 @@ else:
             "Beschreibe dein Forschungsinteresse:",
             value=st.session_state.get("relevance_query", ""),
             height=100,
-            placeholder="z.B. Digital leadership and employee mental health in remote work settings",
+            placeholder="z.B. Team Coordination and Performance in hierarchical structures",
             key="relevance_query_input",
         )
 
@@ -835,11 +844,13 @@ else:
         )
 
         if st.button("⭐ Relevanz berechnen", use_container_width=True):
-            if not relevance_query.strip():
+            if "results_df" not in st.session_state or st.session_state["results_df"].empty:
+                st.warning("Bitte lade zuerst Artikel über 'Let's go!'.")
+            elif not relevance_query.strip():
                 st.warning("Bitte gib eine Beschreibung ein.")
             else:
                 st.session_state["relevance_query"] = relevance_query.strip()
-                with st.spinner("Berechne Embeddings und Scores..."):
+                with st.spinner("Berechne Scores..."):
                     rel_series = compute_relevance_scores(
                         st.session_state["results_df"],
                         relevance_query.strip(),
@@ -857,19 +868,17 @@ else:
             st.caption("Top 10 Ergebnisse (hier auswählen für E-Mail):")
             top_df = st.session_state["results_df"].sort_values("relevance_score", ascending=False).head(10)
             
-            for i, (_, row) in enumerate(top_df.iterrows(), start=5000): # Eindeutiger Key-Range
+            for i, (_, row) in enumerate(top_df.iterrows(), start=5000):
                 doi_val = str(row.get("doi", "") or "")
                 doi_norm = doi_val.lower()
                 title = row.get("title", "") or "(ohne Titel)"
                 score = row.get("relevance_score", 0)
-                link = _to_http(row.get("link", "") or doi_val)
+                link_url = _to_http(row.get("link", "") or doi_val)
                 
-                # Stabiler Key für Checkbox-Synchronisation
                 rel_chk_key = f"rel_sel_{i}_{hashlib.md5(doi_norm.encode()).hexdigest()[:8]}"
                 
                 r_check, r_content = st.columns([0.1, 0.9])
                 with r_check:
-                    # Nutzt die bestehende toggle_doi Logik zur Synchronisation mit der Hauptliste
                     st.checkbox(
                         " ", 
                         value=doi_norm in st.session_state["selected_dois"],
@@ -884,12 +893,11 @@ else:
                         f"**{title}** \n"
                         f"Score: **{score}/100** | "
                         f"*{row.get('journal', '')}* "
-                        + (f"| [🔗 Link]({link})" if link else "")
+                        + (f"| [🔗 Link]({link_url})" if link_url else "")
                     )
                 st.markdown('<div style="margin-bottom:-10px; border-bottom:1px solid #ddd; opacity:0.3;"></div>', unsafe_allow_html=True)
         else:
             st.caption("Noch keine Relevanzwerte berechnet.")
-
 
 # =========================
 # E-Mail Versand (SMTP) - JETZT MIT HTML-DESIGN
