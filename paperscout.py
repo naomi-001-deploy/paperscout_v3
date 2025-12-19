@@ -5,7 +5,7 @@
 # FEATURE (NEU): Dynamische Farbgebung (Dark Mode / Light Mode) durch Streamlit CSS-Variablen.
 # FEATURE (UPDATE): Themencluster jetzt untereinander als ausklappbare Karten mit Checkboxen.
 # FEATURE (UPDATE): Relevanz-Liste mit Checkboxen und ausklappbaren Abstracts.
-# FIX: Relevanz-Rating erscheint garantiert erst nach dem Laden der Ergebnisse.
+# FIX (CRITICAL): Robustes Laden des API-Keys (Direktzugriff auf Secrets statt Env-Copy).
 
 import os, re, html, json, smtplib, ssl, hashlib
 from email.mime.text import MIMEText
@@ -50,34 +50,60 @@ def _stable_sel_key(r: dict, suffix: str) -> str:
     h = hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
     return f"sel_card_{h}_{suffix}"
 
-# --- SMTP aus Secrets/Env laden (robust, auch wenn keine secrets.toml vorhanden ist) ---
-def setup_smtp_from_secrets_or_env():
-    try:
-        import streamlit as st
-        secrets_obj = getattr(st, "secrets", None)
+# =========================
+# ZENTRALE KEY-VERWALTUNG (ROBUST)
+# =========================
+def get_openai_key() -> Optional[str]:
+    """
+    Sucht den API Key in SessionState (Eingabe), Secrets oder Environment.
+    Priorität: 
+    1. Eingabefeld (Session State 'user_openai_key')
+    2. st.secrets["PAPERSCOUT_OPENAI_API_KEY"]
+    3. st.secrets["OPENAI_API_KEY"]
+    4. os.environ
+    """
+    # 1. User Input aus dieser Session
+    if "user_openai_key" in st.session_state and st.session_state["user_openai_key"]:
+        return str(st.session_state["user_openai_key"]).strip()
+    
+    # 2. Secrets (Streamlit Cloud)
+    # Wir greifen direkt zu, ohne try/except Block um das ganze Skript
+    if hasattr(st, "secrets"):
         try:
-            _ = secrets_obj.get("_probe_", None) if hasattr(secrets_obj, "get") else None
+            if "PAPERSCOUT_OPENAI_API_KEY" in st.secrets:
+                return str(st.secrets["PAPERSCOUT_OPENAI_API_KEY"]).strip()
+            if "OPENAI_API_KEY" in st.secrets:
+                return str(st.secrets["OPENAI_API_KEY"]).strip()
         except Exception:
-            secrets_obj = None
-    except Exception:
-        secrets_obj = None
+            pass
+            
+    # 3. Environment Variables (Lokales Docker/Server Setup)
+    return os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
+# --- SMTP aus Secrets/Env laden ---
+def setup_smtp_from_secrets_or_env():
+    # Helper um Secrets sicher zu lesen
     def read_secret(key: str) -> Optional[str]:
-        if secrets_obj is None:
-            return None
-        try:
-            val = secrets_obj[key]
-            val = str(val).strip()
-            return val if val else None
-        except Exception:
-            return None
+        if hasattr(st, "secrets"):
+            try:
+                # Prüfen ob Key existiert, um Fehler zu vermeiden
+                if key in st.secrets:
+                    return str(st.secrets[key]).strip()
+            except Exception:
+                return None
+        return None
 
     def setdef(key: str, default: Optional[str] = None):
+        # 1. Versuche Secret
         val = read_secret(key)
+        # 2. Versuche Env
         if val is None:
             val = os.environ.get(key)
+        # 3. Default
         if val is None:
             val = default
+        
+        # Setze Env Var für spätere Nutzung
         if val is not None:
             os.environ[key] = str(val)
 
@@ -91,27 +117,11 @@ def setup_smtp_from_secrets_or_env():
     setdef("EMAIL_SENDER_NAME", "paperscout")
 
 setup_smtp_from_secrets_or_env()
-# --- OpenAI-Key optional aus Streamlit Secrets holen ---
-try:
-    if "PAPERSCOUT_OPENAI_API_KEY" in st.secrets:
-        key_val = str(st.secrets["PAPERSCOUT_OPENAI_API_KEY"]).strip()
-        if key_val:
-            os.environ["PAPERSCOUT_OPENAI_API_KEY"] = key_val
-except Exception:
-    # Wenn st.secrets nicht verfügbar ist (lokal ohne Config), einfach ignorieren
-    pass
 
 # =========================
 # App-Konfiguration
 # =========================
 st.set_page_config(page_title="paperscout UI", layout="wide")
-
-HARDCODED_KEY = ""
-HARDCODED_CROSSREF_MAIL = ""
-if HARDCODED_KEY:
-    os.environ["PAPERSCOUT_OPENAI_API_KEY"] = HARDCODED_KEY
-if HARDCODED_CROSSREF_MAIL:
-    os.environ["CROSSREF_MAILTO"] = HARDCODED_CROSSREF_MAIL
 
 # =========================
 # HTTP Basics
@@ -417,7 +427,7 @@ def fetch_openalex(doi:str)->Optional[Dict[str, Any]]:
     except Exception:return None
 
 def ai_extract_metadata_from_html(html_text:str,model:str)->Optional[Dict[str, Any]]:
-    key=os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    key = get_openai_key() # <--- NEU: Nutzt zentrale Funktion
     if not key:return None
     try:
         from openai import OpenAI
@@ -582,7 +592,7 @@ def dedup(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # Themencluster mit OpenAI-Embeddings (ohne sklearn)
 # =========================
 def _get_embedding(text: str, model: str = "text-embedding-3-small") -> List[float]:
-    key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    key = get_openai_key() # <--- NEU: Nutzt zentrale Funktion
     if not key:
         return []
     try:
@@ -646,7 +656,7 @@ def _ai_name_cluster(examples: List[str], model: str = "gpt-4o-mini") -> Optiona
     Erzeugt mit OpenAI einen kurzen, sprechenden Clusternamen (3–6 Wörter, deutsch)
     basierend auf einigen Beispieltexten (Abstracts/Titel) aus dem Cluster.
     """
-    key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    key = get_openai_key() # <--- NEU: Nutzt zentrale Funktion
     if not key:
         return None
 
@@ -750,7 +760,7 @@ def build_clusters_openai(df: pd.DataFrame, k: int = 5, min_docs: int = 5) -> Op
     if not clusters:
         return None
 
-    key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    key = get_openai_key() # <--- NEU: Nutzt zentrale Funktion
     if key:
         # Mapping Index -> Text, damit wir pro Cluster die Beispiele holen können
         idx_to_text = {idx: txt for idx, txt in zip(clean_indices, clean_texts)}
@@ -1097,11 +1107,23 @@ with tab2:
     ai_model = st.text_input("OpenAI Modell (für Abstract-Fallback)", value="gpt-4o-mini")
     
     st.markdown("#### API-Keys & E-Mails")
-    api_key_input = st.text_input("🔑 OpenAI API-Key", type="password", value="", help="Optional. Wird für Artikel ohne Abstract benötigt.")
-    if api_key_input:
-        os.environ["PAPERSCOUT_OPENAI_API_KEY"] = api_key_input
-        st.caption("API-Key für diese Sitzung gesetzt.")
-        
+    
+    # -----------------------------------------------------
+    # ROBUSTER API-KEY UI BEREICH
+    # -----------------------------------------------------
+    current_key = get_openai_key()
+    if current_key:
+        st.success("✅ OpenAI API-Key aktiv (aus Secrets oder Eingabe).")
+    else:
+        st.warning("⚠️ Kein API-Key gefunden. Bitte in Secrets hinterlegen oder hier eingeben.")
+
+    # Eingabefeld (Überschreibt Secrets temporär)
+    user_key_input = st.text_input("🔑 Temporären Key eingeben (optional)", type="password", help="Überschreibt den Key aus den Secrets für diese Sitzung.")
+    if user_key_input:
+        st.session_state["user_openai_key"] = user_key_input
+        st.rerun()
+    # -----------------------------------------------------
+
     crossref_mail = st.text_input("📧 Crossref Mailto (empfohlen)", value=os.getenv("CROSSREF_MAILTO", ""), help="Eine E-Mail-Adresse verbessert die Zuverlässigkeit der Crossref-API.")
     if crossref_mail:
         os.environ["CROSSREF_MAILTO"] = crossref_mail
@@ -1330,7 +1352,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # 🧩 Themencluster (Beta) – OpenAI-Embeddings
     # --------------------------------------
     st.markdown("### 🧩 Themencluster (Beta)")
-    key_openai = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    key_openai = get_openai_key() # <--- NEU: Robuster Zugriff
     if not key_openai:
         st.info("Bitte trage einen OpenAI API-Key ein (Tab 'Einstellungen'), um Themencluster zu berechnen.")
     else:
@@ -1393,7 +1415,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # --------------------------------------
     st.markdown("### 🎯 Relevanz-Rating (Beta)")
 
-    rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    rel_key = get_openai_key() # <--- NEU: Robuster Zugriff
     if not rel_key:
         st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (Tab 'Einstellungen').")
     else:
