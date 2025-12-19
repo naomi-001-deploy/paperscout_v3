@@ -1,4 +1,3 @@
-# app_v6_openai.py – Paperscout (Nur API-Version)
 # UI-Update: Modernes Design mit CSS-Karten und Tabs.
 # BUGFIX: StreamlitDuplicateElementId durch eindeutige Button-Labels behoben.
 # BUGFIX: HTML-Escaping-Problem im Abstract (f-string-Konflikt) endgültig behoben.
@@ -764,7 +763,7 @@ def build_clusters_openai(df: pd.DataFrame, k: int = 5, min_docs: int = 5) -> Op
     return clusters
 
 # =========================
-# Relevanz-Rating mit OpenAI-Embeddings
+# Relevanz-Rating mit OpenAI-Embeddings (Berechnung & UI)
 # =========================
 def _cosine_sim(v1: List[float], v2: List[float]) -> float:
     if not v1 or not v2 or len(v1) != len(v2):
@@ -776,17 +775,13 @@ def _cosine_sim(v1: List[float], v2: List[float]) -> float:
         return 0.0
     return num / (den1 * den2)
 
-
 def compute_relevance_scores(
     df: pd.DataFrame,
     query_text: str,
     min_text_len: int = 30,
     model: str = "text-embedding-3-small",
 ) -> Optional[pd.Series]:
-    """
-    Berechnet eine Relevanzbewertung (0–100) je Artikel
-    basierend auf Embedding-Ähnlichkeit zwischen Query und Abstract/Titel.
-    """
+    """Berechnet eine Relevanzbewertung (0–100) basierend auf Embedding-Ähnlichkeit."""
     query_text = (query_text or "").strip()
     if not query_text:
         return None
@@ -796,11 +791,11 @@ def compute_relevance_scores(
         return None
 
     scores: Dict[int, float] = {}
-
     for idx, row in df.iterrows():
         abstract = str(row.get("abstract", "") or "").strip()
         title = str(row.get("title", "") or "").strip()
         text = abstract if len(abstract) >= min_text_len else title
+        
         if len(text) < min_text_len:
             scores[idx] = 0.0
             continue
@@ -811,14 +806,89 @@ def compute_relevance_scores(
             continue
 
         sim = _cosine_sim(q_emb, emb)
-        # Auf 0–100 skalieren, negative Werte kappen
         sim = max(sim, 0.0)
         scores[idx] = round(sim * 100, 1)
 
-    if not scores:
-        return None
+    return pd.Series(scores, name="relevance_score") if scores else None
 
-    return pd.Series(scores, name="relevance_score")
+# --- UI TEIL: RELEVANZ RATING ---
+st.markdown("### 🎯 Relevanz-Rating (Beta)")
+
+rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+if not rel_key:
+    st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (Tab 'Einstellungen').")
+else:
+    rel_col_left, rel_col_right = st.columns([2, 3])
+    with rel_col_left:
+        relevance_query = st.text_area(
+            "Beschreibe dein Forschungsinteresse:",
+            value=st.session_state.get("relevance_query", ""),
+            height=100,
+            placeholder="z.B. Digital leadership and employee mental health in remote work settings",
+            key="relevance_query_input",
+        )
+
+        min_len = st.slider(
+            "Minimale Textlänge für Bewertung",
+            min_value=20, max_value=100, value=30, step=5,
+            key="relevance_min_text_len",
+        )
+
+        if st.button("⭐ Relevanz berechnen", use_container_width=True):
+            if not relevance_query.strip():
+                st.warning("Bitte gib eine Beschreibung ein.")
+            else:
+                st.session_state["relevance_query"] = relevance_query.strip()
+                with st.spinner("Berechne Embeddings und Scores..."):
+                    rel_series = compute_relevance_scores(
+                        st.session_state["results_df"],
+                        relevance_query.strip(),
+                        min_text_len=min_len,
+                    )
+                    if rel_series is not None:
+                        st.session_state["results_df"]["relevance_score"] = rel_series
+                        st.success("Relevanz berechnet!")
+                        st.rerun()
+                    else:
+                        st.error("Fehler bei der Berechnung.")
+
+    with rel_col_right:
+        if "results_df" in st.session_state and "relevance_score" in st.session_state["results_df"].columns:
+            st.caption("Top 10 Ergebnisse (hier auswählen für E-Mail):")
+            top_df = st.session_state["results_df"].sort_values("relevance_score", ascending=False).head(10)
+            
+            for i, (_, row) in enumerate(top_df.iterrows(), start=5000): # Eindeutiger Key-Range
+                doi_val = str(row.get("doi", "") or "")
+                doi_norm = doi_val.lower()
+                title = row.get("title", "") or "(ohne Titel)"
+                score = row.get("relevance_score", 0)
+                link = _to_http(row.get("link", "") or doi_val)
+                
+                # Stabiler Key für Checkbox-Synchronisation
+                rel_chk_key = f"rel_sel_{i}_{hashlib.md5(doi_norm.encode()).hexdigest()[:8]}"
+                
+                r_check, r_content = st.columns([0.1, 0.9])
+                with r_check:
+                    # Nutzt die bestehende toggle_doi Logik zur Synchronisation mit der Hauptliste
+                    st.checkbox(
+                        " ", 
+                        value=doi_norm in st.session_state["selected_dois"],
+                        key=rel_chk_key,
+                        label_visibility="hidden",
+                        on_change=toggle_doi,
+                        args=(doi_norm, rel_chk_key)
+                    )
+                
+                with r_content:
+                    st.markdown(
+                        f"**{title}** \n"
+                        f"Score: **{score}/100** | "
+                        f"*{row.get('journal', '')}* "
+                        + (f"| [🔗 Link]({link})" if link else "")
+                    )
+                st.markdown('<div style="margin-bottom:-10px; border-bottom:1px solid #ddd; opacity:0.3;"></div>', unsafe_allow_html=True)
+        else:
+            st.caption("Noch keine Relevanzwerte berechnet.")
 
 
 # =========================
