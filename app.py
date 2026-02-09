@@ -1214,8 +1214,8 @@ st.markdown(
 st.markdown(
     """
     <div class="ps-hero">
-        <div class="ps-hero-title">🕵🏻‍♀️ paperscout</div>
-        <p class="ps-hero-sub">Frische Forschungsartikel, kuratiert in wenigen Sekunden.</p>
+        <div class="ps-hero-title">paperscout</div>
+        <p class="ps-hero-sub">Frische Forschungssignale, kuratiert in wenigen Sekunden.</p>
     </div>
     """,
     unsafe_allow_html=True
@@ -1360,7 +1360,7 @@ if "preset_to_apply" in st.session_state:
         st.session_state["last30_input"] = preset.get("last30", False)
         st.session_state["last1_input"] = preset.get("last1", False)
         st.session_state["rows_input"] = preset.get("rows", 100)
-        st.session_state["ai_model_input"] = preset.get("ai_model", "gpt-4o-mini")
+        st.session_state["ai_model_input"] = preset.get("ai_model", "gpt-4.1")
         st.session_state["topic_query_input"] = preset.get("topic_query", "")
         st.session_state["relevance_query_input"] = preset.get("relevance_query", "")
 
@@ -1434,7 +1434,7 @@ with mid:
         if "rows_input" not in st.session_state:
             st.session_state["rows_input"] = 100
         if "ai_model_input" not in st.session_state:
-            st.session_state["ai_model_input"] = "gpt-4o-mini"
+            st.session_state["ai_model_input"] = "gpt-4.1"
 
         if "use_semantic" not in st.session_state:
             st.session_state["use_semantic"] = True
@@ -1492,6 +1492,7 @@ with mid:
             height=120,
             key="relevance_query_input",
         )
+        st.caption("Wenn ausgefüllt, werden Ergebnisse automatisch nach Relevanz bewertet und ein Briefing erzeugt.")
 
 with right:
     with st.container(border=True):
@@ -1540,7 +1541,7 @@ with right:
                         "last30": bool(st.session_state.get("last30_input")),
                         "last1": bool(st.session_state.get("last1_input")),
                         "rows": int(st.session_state.get("rows_input", 100)),
-                        "ai_model": st.session_state.get("ai_model_input", "gpt-4o-mini"),
+                        "ai_model": st.session_state.get("ai_model_input", "gpt-4.1"),
                         "topic_query": st.session_state.get("topic_query_input", ""),
                         "relevance_query": st.session_state.get("relevance_query_input", ""),
                     }
@@ -1630,6 +1631,38 @@ if run:
             cols = [c for c in ["title", "doi", "issued", "journal", "authors", "abstract", "url", "abstract_source"] if c in df.columns]
             if cols:
                 df = df[cols]
+
+            # --- Auto-Relevanz & Auto-Briefing (One-Step Workflow) ---
+            rel_query = (st.session_state.get("relevance_query_input", "") or "").strip()
+            rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+            if rel_query:
+                if rel_key:
+                    min_len = int(st.session_state.get("relevance_min_text_len", 30) or 30)
+                    rel_series = compute_relevance_scores(
+                        df,
+                        rel_query,
+                        min_text_len=min_len,
+                    )
+                    if rel_series is not None:
+                        df["relevance_score"] = rel_series
+                        why_list = []
+                        for _, row in df.iterrows():
+                            text = (str(row.get("abstract","")) + " " + str(row.get("title",""))).strip()
+                            why_list.append(_why_relevant(rel_query, text))
+                        df["relevance_why"] = why_list
+
+                        # Auto-Briefing: Top Relevanz
+                        top_n = int(st.session_state.get("brief_n", 8) or 8)
+                        top_n = max(3, min(top_n, 12))
+                        top_df = df.sort_values("relevance_score", ascending=False).head(top_n)
+                        brief_lang = st.session_state.get("brief_lang", "Deutsch")
+                        brief = ai_generate_digest(top_df.to_dict(orient="records"), model=ai_model, lang=brief_lang)
+                        if brief:
+                            st.session_state["research_brief"] = brief
+                    else:
+                        st.warning("Relevanz konnte nicht automatisch berechnet werden.")
+                else:
+                    st.info("Relevanz & Briefing übersprungen: Bitte OpenAI API-Key im Command Center setzen.")
 
             st.session_state["results_df"] = df
             st.session_state["selected_dois"] = set() # Auswahl zurücksetzen
