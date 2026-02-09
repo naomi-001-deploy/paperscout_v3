@@ -1337,6 +1337,23 @@ st.markdown(CARD_STYLE_V3, unsafe_allow_html=True)
 journals = sorted(JOURNAL_ISSN.keys())
 today = date.today()
 
+# --- Apply saved search before widgets are created ---
+if "preset_to_apply" in st.session_state:
+    preset_name = st.session_state.pop("preset_to_apply")
+    preset = next((p for p in st.session_state.get("saved_searches", []) if p["name"] == preset_name), None)
+    if preset:
+        for j in journals:
+            st.session_state[_chk_key(j)] = j in preset.get("journals", [])
+        st.session_state["since_input"] = datetime.strptime(preset["since"], "%Y-%m-%d").date()
+        st.session_state["until_input"] = datetime.strptime(preset["until"], "%Y-%m-%d").date()
+        st.session_state["last7_input"] = preset.get("last7", False)
+        st.session_state["last30_input"] = preset.get("last30", False)
+        st.session_state["last1_input"] = preset.get("last1", False)
+        st.session_state["rows_input"] = preset.get("rows", 100)
+        st.session_state["ai_model_input"] = preset.get("ai_model", "gpt-4o-mini")
+        st.session_state["topic_query_input"] = preset.get("topic_query", "")
+        st.session_state["relevance_query_input"] = preset.get("relevance_query", "")
+
 st.markdown("## Command Center")
 left, mid, right = st.columns([2.1, 1.3, 1.2])
 
@@ -1530,21 +1547,8 @@ with right:
             names = [p["name"] for p in st.session_state["saved_searches"]]
             pick = st.selectbox("Laden", options=names, index=0)
             if st.button("Anwenden", use_container_width=True):
-                preset = next((p for p in st.session_state["saved_searches"] if p["name"] == pick), None)
-                if preset:
-                    for j in journals:
-                        st.session_state[_chk_key(j)] = j in preset["journals"]
-                    st.session_state["since_input"] = datetime.strptime(preset["since"], "%Y-%m-%d").date()
-                    st.session_state["until_input"] = datetime.strptime(preset["until"], "%Y-%m-%d").date()
-                    st.session_state["last7_input"] = preset.get("last7", False)
-                    st.session_state["last30_input"] = preset.get("last30", False)
-                    st.session_state["last1_input"] = preset.get("last1", False)
-                    st.session_state["rows_input"] = preset.get("rows", 100)
-                    st.session_state["ai_model_input"] = preset.get("ai_model", "gpt-4o-mini")
-                    st.session_state["topic_query_input"] = preset.get("topic_query", "")
-                    st.session_state["relevance_query_input"] = preset.get("relevance_query", "")
-                    st.success(f"Suche geladen: {preset['name']}")
-                    st.rerun()
+                st.session_state["preset_to_apply"] = pick
+                st.rerun()
 
 st.divider()
 
@@ -1863,6 +1867,12 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             )
             st.markdown(card_html, unsafe_allow_html=True)
 
+    def section_card(title: str, desc: str, key: str):
+        with st.container(border=True):
+            st.markdown(f"### {title}")
+            st.caption(desc)
+            return st.expander("Optionen anzeigen", expanded=False, key=key)
+
     # --- Compare Runs ---
     new_df = st.session_state.get("new_since_last_run")
     if isinstance(new_df, pd.DataFrame) and not new_df.empty:
@@ -1876,329 +1886,351 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # --------------------------------------
     # 🧩 Themencluster (Beta) – OpenAI-Embeddings
     # --------------------------------------
-    st.markdown("### 🧩 Themencluster (Beta)")
-    key_openai = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not key_openai:
-        st.info("Bitte trage einen OpenAI API-Key ein (oben im Command Center), um Themencluster zu berechnen.")
-    else:
-        # Layout für Controls: Links Slider, Rechts Button
-        with st.container(border=True):
-            cl_controls_1, cl_controls_2, cl_controls_3 = st.columns([1, 1, 1])
-            with cl_controls_1:
-                 cluster_k = st.slider(
-                    "Anzahl Cluster",
-                    min_value=2,
-                    max_value=10,
-                    value=5,
-                    step=1,
-                    key="cluster_k_slider",
-                )
-            with cl_controls_2:
-                 cluster_min_docs = st.slider(
-                    "Min. Artikel/Cluster",
-                    min_value=3,
-                    max_value=20,
-                    value=5,
-                    step=1,
-                    key="cluster_min_docs_slider",
-                )
-            with cl_controls_3:
-                st.write("") # Spacer
-                st.write("") # Spacer
-                if st.button("🔍 Themencluster berechnen", use_container_width=True, key="btn_cluster_compute"):
-                    clusters = build_clusters_openai(df, k=cluster_k, min_docs=cluster_min_docs)
-                    if not clusters:
-                        st.warning("Konnte keine sinnvollen Themencluster bilden (zu wenig Text oder technische Probleme).")
-                    else:
-                        st.session_state["topic_clusters_openai"] = clusters
-                        st.success(f"{len(clusters)} Cluster erstellt.")
-
-        # --- UPDATE: Karten-Design (Expander untereinander) ---
-        clusters = st.session_state.get("topic_clusters_openai") or []
-        if clusters:
-            for c_idx, cluster in enumerate(clusters):
-                label_text = cluster["label"]
-                # Wir nutzen st.expander für das "Aufklappen"
-                with st.expander(label_text, expanded=False):
-                    # Inhalt in Container für Styling
-                    st.markdown(f"**Beispieltext:** *{cluster['sample_text']}*")
-                    
-                    sub_df = df.loc[cluster["indices"]] if cluster["indices"] else pd.DataFrame()
-                    st.caption(f"{len(sub_df)} Artikel in diesem Cluster:")
-                    
-                    # Hier rendern wir nun auch die vollwertigen Karten mit Checkboxen und Abstract
-                    for r_idx, (_, row) in enumerate(sub_df.iterrows()):
-                        render_row_ui(row, f"clus_{c_idx}_{r_idx}")
+    cluster_exp = section_card(
+        "🧩 Themencluster (Beta)",
+        "Findet thematische Gruppen in den Abstracts und vergibt automatische Clusternamen.",
+        "exp_cluster",
+    )
+    with cluster_exp:
+        key_openai = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if not key_openai:
+            st.info("Bitte trage einen OpenAI API-Key ein (oben im Command Center), um Themencluster zu berechnen.")
         else:
-            if key_openai:
-                st.caption("Noch keine Cluster berechnet. Wähle Parameter und klicke auf „Themencluster berechnen“.")
+            # Layout für Controls: Links Slider, Rechts Button
+            with st.container(border=True):
+                cl_controls_1, cl_controls_2, cl_controls_3 = st.columns([1, 1, 1])
+                with cl_controls_1:
+                     cluster_k = st.slider(
+                        "Anzahl Cluster",
+                        min_value=2,
+                        max_value=10,
+                        value=5,
+                        step=1,
+                        key="cluster_k_slider",
+                    )
+                with cl_controls_2:
+                     cluster_min_docs = st.slider(
+                        "Min. Artikel/Cluster",
+                        min_value=3,
+                        max_value=20,
+                        value=5,
+                        step=1,
+                        key="cluster_min_docs_slider",
+                    )
+                with cl_controls_3:
+                    st.write("") # Spacer
+                    st.write("") # Spacer
+                    if st.button("🔍 Themencluster berechnen", use_container_width=True, key="btn_cluster_compute"):
+                        clusters = build_clusters_openai(df, k=cluster_k, min_docs=cluster_min_docs)
+                        if not clusters:
+                            st.warning("Konnte keine sinnvollen Themencluster bilden (zu wenig Text oder technische Probleme).")
+                        else:
+                            st.session_state["topic_clusters_openai"] = clusters
+                            st.success(f"{len(clusters)} Cluster erstellt.")
+
+            # --- UPDATE: Karten-Design (Expander untereinander) ---
+            clusters = st.session_state.get("topic_clusters_openai") or []
+            if clusters:
+                for c_idx, cluster in enumerate(clusters):
+                    label_text = cluster["label"]
+                    # Wir nutzen st.expander für das "Aufklappen"
+                    with st.expander(label_text, expanded=False):
+                        # Inhalt in Container für Styling
+                        st.markdown(f"**Beispieltext:** *{cluster['sample_text']}*")
+                        
+                        sub_df = df.loc[cluster["indices"]] if cluster["indices"] else pd.DataFrame()
+                        st.caption(f"{len(sub_df)} Artikel in diesem Cluster:")
+                        
+                        # Hier rendern wir nun auch die vollwertigen Karten mit Checkboxen und Abstract
+                        for r_idx, (_, row) in enumerate(sub_df.iterrows()):
+                            render_row_ui(row, f"clus_{c_idx}_{r_idx}")
+            else:
+                if key_openai:
+                    st.caption("Noch keine Cluster berechnet. Wähle Parameter und klicke auf „Themencluster berechnen“.")
 
     # --------------------------------------
     # 🧭 Trends & Insights (Zeitvergleich + Journal Trends)
     # --------------------------------------
-    st.markdown("### 🧭 Trends & Insights")
-    trend = _trend_summary(df, recent_days=30)
-    if trend:
-        st.caption(f"Zeitraum: {trend['recent_start']} bis {trend['recent_end']} (letzte 30 Tage)")
-        t_cols = st.columns(3)
-        with t_cols[0]:
-            st.markdown("**Top-Themen (letzte 30 Tage)**")
-            st.write(", ".join(trend.get("recent_terms", [])) or "–")
-        with t_cols[1]:
-            st.markdown("**Top-Themen (davor)**")
-            st.write(", ".join(trend.get("prior_terms", [])) or "–")
-        with t_cols[2]:
-            st.markdown("**Emerging Terms**")
-            st.write(", ".join(trend.get("emerging", [])) or "–")
-    else:
-        st.caption("Nicht genügend Datumsangaben für Trend-Analyse.")
+    trends_exp = section_card(
+        "🧭 Trends & Insights",
+        "Zeigt Trend-Themen, Publikationen pro Monat und Abstract-Quellen.",
+        "exp_trends",
+    )
+    with trends_exp:
+        trend = _trend_summary(df, recent_days=30)
+        if trend:
+            st.caption(f"Zeitraum: {trend['recent_start']} bis {trend['recent_end']} (letzte 30 Tage)")
+            t_cols = st.columns(3)
+            with t_cols[0]:
+                st.markdown("**Top-Themen (letzte 30 Tage)**")
+                st.write(", ".join(trend.get("recent_terms", [])) or "–")
+            with t_cols[1]:
+                st.markdown("**Top-Themen (davor)**")
+                st.write(", ".join(trend.get("prior_terms", [])) or "–")
+            with t_cols[2]:
+                st.markdown("**Emerging Terms**")
+                st.write(", ".join(trend.get("emerging", [])) or "–")
+        else:
+            st.caption("Nicht genügend Datumsangaben für Trend-Analyse.")
 
-    # Journal-Trends
-    journal_counts = df.get("journal", pd.Series(dtype=str)).value_counts().head(5)
-    if not journal_counts.empty:
-        st.markdown("**Top Journals (Anzahl Treffer)**")
-        st.write(", ".join([f"{j} ({c})" for j, c in journal_counts.items()]))
+        # Journal-Trends
+        journal_counts = df.get("journal", pd.Series(dtype=str)).value_counts().head(5)
+        if not journal_counts.empty:
+            st.markdown("**Top Journals (Anzahl Treffer)**")
+            st.write(", ".join([f"{j} ({c})" for j, c in journal_counts.items()]))
 
-    # Zeitverlauf (Monat)
-    month_counts = df.get("issued", pd.Series(dtype=str)).dropna().astype(str).str[:7]
-    month_counts = month_counts[month_counts.str.match(r"\d{4}-\d{2}")]
-    if not month_counts.empty:
-        st.markdown("**Publikationen pro Monat**")
-        trend_series = month_counts.value_counts().sort_index()
-        st.bar_chart(trend_series)
+        # Zeitverlauf (Monat)
+        month_counts = df.get("issued", pd.Series(dtype=str)).dropna().astype(str).str[:7]
+        month_counts = month_counts[month_counts.str.match(r"\d{4}-\d{2}")]
+        if not month_counts.empty:
+            st.markdown("**Publikationen pro Monat**")
+            trend_series = month_counts.value_counts().sort_index()
+            st.bar_chart(trend_series)
 
-    if trend:
-        emerging = trend.get("emerging", [])
-        if emerging:
-            st.markdown("**Query-Ideen (automatisch)**")
-            suggestions = []
-            if len(emerging) >= 3:
-                suggestions.append(", ".join(emerging[:3]))
-            if len(emerging) >= 2:
-                suggestions.append(" ".join(emerging[:2]))
-            suggestions.append(emerging[0])
-            st.write(" · ".join(suggestions[:3]))
+        if trend:
+            emerging = trend.get("emerging", [])
+            if emerging:
+                st.markdown("**Query-Ideen (automatisch)**")
+                suggestions = []
+                if len(emerging) >= 3:
+                    suggestions.append(", ".join(emerging[:3]))
+                if len(emerging) >= 2:
+                    suggestions.append(" ".join(emerging[:2]))
+                suggestions.append(emerging[0])
+                st.write(" · ".join(suggestions[:3]))
 
-    source_counts = df.get("abstract_source", pd.Series(dtype=str)).value_counts()
-    if not source_counts.empty:
-        st.markdown("**Abstract-Quellen**")
-        st.bar_chart(source_counts)
+        source_counts = df.get("abstract_source", pd.Series(dtype=str)).value_counts()
+        if not source_counts.empty:
+            st.markdown("**Abstract-Quellen**")
+            st.bar_chart(source_counts)
 
     # --------------------------------------
     # 🔮 Empfehlungen (ähnliche Reads zu Auswahl)
     # --------------------------------------
-    st.markdown("### 🔮 Empfohlene nächste Reads")
-    rec_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not rec_key:
-        st.info("Für Empfehlungen wird ein OpenAI API-Key benötigt (oben im Command Center).")
-    else:
-        rec_cols = st.columns([1, 3])
-        with rec_cols[0]:
-            rec_n = st.slider("Anzahl Empfehlungen", min_value=3, max_value=15, value=6, step=1)
-            if st.button("Empfehlungen berechnen", use_container_width=True):
-                sel = st.session_state.get("selected_dois", set())
-                if not sel:
-                    st.warning("Bitte wähle mindestens eine DOI aus.")
-                else:
-                    # Build embeddings cache
-                    cache = st.session_state.get("embedding_cache", {})
-                    def _embed_text(text: str) -> List[float]:
-                        key = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
-                        if key in cache:
-                            return cache[key]
-                        emb = _get_embedding(text)
-                        if emb:
-                            cache[key] = emb
-                        return emb
-
-                    # Mean embedding of selected
-                    sel_rows = df[df["doi"].astype(str).str.lower().isin(sel)]
-                    sel_vecs = []
-                    for _, r in sel_rows.iterrows():
-                        text = (str(r.get("abstract","")) + " " + str(r.get("title",""))).strip()
-                        emb = _embed_text(text)
-                        if emb:
-                            sel_vecs.append(emb)
-                    if not sel_vecs:
-                        st.warning("Keine Embeddings für Auswahl verfügbar.")
-                    else:
-                        # Average
-                        dim = len(sel_vecs[0])
-                        mean = [0.0] * dim
-                        for v in sel_vecs:
-                            for i in range(dim):
-                                mean[i] += v[i]
-                        mean = [v / len(sel_vecs) for v in mean]
-
-                        # Score others
-                        scores = []
-                        for idx, r in df.iterrows():
-                            if str(r.get("doi","")).lower() in sel:
-                                continue
-                            text = (str(r.get("abstract","")) + " " + str(r.get("title",""))).strip()
-                            emb = _embed_text(text)
-                            if not emb:
-                                continue
-                            scores.append((idx, _cosine_sim(mean, emb)))
-                        scores = sorted(scores, key=lambda x: x[1], reverse=True)[:rec_n]
-                        st.session_state["rec_indices"] = [i for i, _ in scores]
-                        st.session_state["embedding_cache"] = cache
-
-        with rec_cols[1]:
-            rec_idx = st.session_state.get("rec_indices", [])
-            if rec_idx:
-                sub_df = df.loc[rec_idx]
-                for r_idx, (_, row) in enumerate(sub_df.iterrows()):
-                    render_row_ui(row, f"rec_{r_idx}")
-            else:
-                st.caption("Wähle DOIs und berechne Empfehlungen.")
-
-    # --------------------------------------
-    # 🧠 Research Brief (KI)
-    # --------------------------------------
-    st.markdown("### 🧠 Research Brief")
-    brief_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not brief_key:
-        st.info("Für den Research Brief wird ein OpenAI API-Key benötigt (oben im Command Center).")
-    else:
-        b_cols = st.columns([1, 2])
-        with b_cols[0]:
-            brief_source = st.radio(
-                "Quelle",
-                ["Auswahl", "Top Relevanz", "Alle (Limit)"],
-                index=0,
-                key="brief_source",
-            )
-            brief_n = st.slider("Anzahl Papers", min_value=3, max_value=12, value=8, step=1, key="brief_n")
-            brief_lang = st.selectbox("Sprache", ["Deutsch", "English"], index=0, key="brief_lang")
-            if st.button("Briefing erzeugen", use_container_width=True):
-                if brief_source == "Auswahl":
+    rec_exp = section_card(
+        "🔮 Empfohlene nächste Reads",
+        "Schlägt Paper vor, die deiner Auswahl semantisch ähneln.",
+        "exp_recs",
+    )
+    with rec_exp:
+        rec_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if not rec_key:
+            st.info("Für Empfehlungen wird ein OpenAI API-Key benötigt (oben im Command Center).")
+        else:
+            rec_cols = st.columns([1, 3])
+            with rec_cols[0]:
+                rec_n = st.slider("Anzahl Empfehlungen", min_value=3, max_value=15, value=6, step=1)
+                if st.button("Empfehlungen berechnen", use_container_width=True):
                     sel = st.session_state.get("selected_dois", set())
                     if not sel:
                         st.warning("Bitte wähle mindestens eine DOI aus.")
                     else:
-                        sub = df[df["doi"].astype(str).str.lower().isin(sel)].head(brief_n)
+                        # Build embeddings cache
+                        cache = st.session_state.get("embedding_cache", {})
+                        def _embed_text(text: str) -> List[float]:
+                            key = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+                            if key in cache:
+                                return cache[key]
+                            emb = _get_embedding(text)
+                            if emb:
+                                cache[key] = emb
+                            return emb
+
+                        # Mean embedding of selected
+                        sel_rows = df[df["doi"].astype(str).str.lower().isin(sel)]
+                        sel_vecs = []
+                        for _, r in sel_rows.iterrows():
+                            text = (str(r.get("abstract","")) + " " + str(r.get("title",""))).strip()
+                            emb = _embed_text(text)
+                            if emb:
+                                sel_vecs.append(emb)
+                        if not sel_vecs:
+                            st.warning("Keine Embeddings für Auswahl verfügbar.")
+                        else:
+                            # Average
+                            dim = len(sel_vecs[0])
+                            mean = [0.0] * dim
+                            for v in sel_vecs:
+                                for i in range(dim):
+                                    mean[i] += v[i]
+                            mean = [v / len(sel_vecs) for v in mean]
+
+                            # Score others
+                            scores = []
+                            for idx, r in df.iterrows():
+                                if str(r.get("doi","")).lower() in sel:
+                                    continue
+                                text = (str(r.get("abstract","")) + " " + str(r.get("title",""))).strip()
+                                emb = _embed_text(text)
+                                if not emb:
+                                    continue
+                                scores.append((idx, _cosine_sim(mean, emb)))
+                            scores = sorted(scores, key=lambda x: x[1], reverse=True)[:rec_n]
+                            st.session_state["rec_indices"] = [i for i, _ in scores]
+                            st.session_state["embedding_cache"] = cache
+
+            with rec_cols[1]:
+                rec_idx = st.session_state.get("rec_indices", [])
+                if rec_idx:
+                    sub_df = df.loc[rec_idx]
+                    for r_idx, (_, row) in enumerate(sub_df.iterrows()):
+                        render_row_ui(row, f"rec_{r_idx}")
+                else:
+                    st.caption("Wähle DOIs und berechne Empfehlungen.")
+
+    # --------------------------------------
+    # 🧠 Research Brief (KI)
+    # --------------------------------------
+    brief_exp = section_card(
+        "🧠 Research Brief",
+        "Erzeugt ein kompaktes Briefing mit Executive Summary, Themen und Empfehlungen.",
+        "exp_brief",
+    )
+    with brief_exp:
+        brief_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if not brief_key:
+            st.info("Für den Research Brief wird ein OpenAI API-Key benötigt (oben im Command Center).")
+        else:
+            b_cols = st.columns([1, 2])
+            with b_cols[0]:
+                brief_source = st.radio(
+                    "Quelle",
+                    ["Auswahl", "Top Relevanz", "Alle (Limit)"],
+                    index=0,
+                    key="brief_source",
+                )
+                brief_n = st.slider("Anzahl Papers", min_value=3, max_value=12, value=8, step=1, key="brief_n")
+                brief_lang = st.selectbox("Sprache", ["Deutsch", "English"], index=0, key="brief_lang")
+                if st.button("Briefing erzeugen", use_container_width=True):
+                    if brief_source == "Auswahl":
+                        sel = st.session_state.get("selected_dois", set())
+                        if not sel:
+                            st.warning("Bitte wähle mindestens eine DOI aus.")
+                        else:
+                            sub = df[df["doi"].astype(str).str.lower().isin(sel)].head(brief_n)
+                            brief = ai_generate_digest(sub.to_dict(orient="records"), model=ai_model, lang=brief_lang)
+                            st.session_state["research_brief"] = brief
+                    elif brief_source == "Top Relevanz" and "relevance_score" in df.columns:
+                        sub = df.sort_values("relevance_score", ascending=False).head(brief_n)
                         brief = ai_generate_digest(sub.to_dict(orient="records"), model=ai_model, lang=brief_lang)
                         st.session_state["research_brief"] = brief
-                elif brief_source == "Top Relevanz" and "relevance_score" in df.columns:
-                    sub = df.sort_values("relevance_score", ascending=False).head(brief_n)
-                    brief = ai_generate_digest(sub.to_dict(orient="records"), model=ai_model, lang=brief_lang)
-                    st.session_state["research_brief"] = brief
+                    else:
+                        sub = df.head(brief_n)
+                        brief = ai_generate_digest(sub.to_dict(orient="records"), model=ai_model, lang=brief_lang)
+                        st.session_state["research_brief"] = brief
+            with b_cols[1]:
+                brief_text = st.session_state.get("research_brief", "")
+                if brief_text:
+                    st.markdown(brief_text)
                 else:
-                    sub = df.head(brief_n)
-                    brief = ai_generate_digest(sub.to_dict(orient="records"), model=ai_model, lang=brief_lang)
-                    st.session_state["research_brief"] = brief
-        with b_cols[1]:
-            brief_text = st.session_state.get("research_brief", "")
-            if brief_text:
-                st.markdown(brief_text)
-            else:
-                st.caption("Noch kein Briefing. Quelle wählen und generieren.")
+                    st.caption("Noch kein Briefing. Quelle wählen und generieren.")
 
     st.markdown("---")
 
     # --------------------------------------
     # 🎯 Relevanz-Rating (Beta) - JETZT GARANTIERT NACH ERGEBNISSEN
     # --------------------------------------
-    st.markdown("### 🎯 Relevanz-Rating (Beta)")
-
-    rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not rel_key:
-        st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (oben im Command Center).")
-    else:
-        # Layout Aufteilung: Links Eingabe, Rechts Ergebnisse
-        # Damit die Ergebnisse nicht "gequetscht" wirken, geben wir rechts mehr Platz
-        rel_col_left, rel_col_right = st.columns([1, 2])
-        
-        with rel_col_left:
-            st.markdown("#### Eingabe")
-            advanced_rel = st.checkbox("Mehrere Queries (gewichtet)", value=False, key="advanced_relevance")
-            if advanced_rel:
-                if "rel_queries" not in st.session_state:
-                    st.session_state["rel_queries"] = [{"text": "", "weight": 1.0}]
-                for i, q in enumerate(st.session_state["rel_queries"]):
-                    row_cols = st.columns([3, 1, 1])
-                    with row_cols[0]:
-                        st.text_input("Query", value=q.get("text",""), key=f"rel_q_{i}")
-                    with row_cols[1]:
-                        st.number_input("Gewicht", min_value=0.1, max_value=5.0, value=float(q.get("weight",1.0)), step=0.1, key=f"rel_w_{i}")
-                    with row_cols[2]:
-                        if st.button("Entfernen", key=f"rel_rm_{i}"):
-                            st.session_state["rel_queries"].pop(i)
-                            st.rerun()
-                if st.button("Query hinzufügen"):
-                    st.session_state["rel_queries"].append({"text": "", "weight": 1.0})
-                # Sync back inputs
-                synced = []
-                for i in range(len(st.session_state["rel_queries"])):
-                    synced.append({
-                        "text": st.session_state.get(f"rel_q_{i}", ""),
-                        "weight": st.session_state.get(f"rel_w_{i}", 1.0),
-                    })
-                st.session_state["rel_queries"] = synced
-                relevance_query = " ".join([q["text"] for q in synced if q.get("text")])
-                st.session_state["relevance_query_input"] = relevance_query
-            else:
-                relevance_query = st.text_area(
-                    "Forschungsinteresse / Fragestellung:",
-                    value=st.session_state.get("relevance_query_input", ""),
-                    height=150,
-                    help="Beispiel: 'transformational leadership, follower well-being, mediated by trust'",
-                    key="relevance_query_detail",
-                )
-                st.session_state["relevance_query_input"] = relevance_query
-
-            min_len = st.slider(
-                "Min. Textlänge (Zeichen)",
-                min_value=20,
-                max_value=100,
-                value=30,
-                step=5,
-                key="relevance_min_text_len",
-            )
-
-            if st.button("⭐ Relevanz berechnen", use_container_width=True, key="btn_compute_relevance"):
-                if not relevance_query.strip():
-                    st.warning("Bitte gib eine Beschreibung ein.")
+    rel_exp = section_card(
+        "🎯 Relevanz-Rating (Beta)",
+        "Bewertet Papers nach semantischer Nähe zu deinem Forschungsfokus.",
+        "exp_relevance",
+    )
+    with rel_exp:
+        rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if not rel_key:
+            st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (oben im Command Center).")
+        else:
+            # Layout Aufteilung: Links Eingabe, Rechts Ergebnisse
+            # Damit die Ergebnisse nicht "gequetscht" wirken, geben wir rechts mehr Platz
+            rel_col_left, rel_col_right = st.columns([1, 2])
+            
+            with rel_col_left:
+                st.markdown("#### Eingabe")
+                advanced_rel = st.checkbox("Mehrere Queries (gewichtet)", value=False, key="advanced_relevance")
+                if advanced_rel:
+                    if "rel_queries" not in st.session_state:
+                        st.session_state["rel_queries"] = [{"text": "", "weight": 1.0}]
+                    for i, q in enumerate(st.session_state["rel_queries"]):
+                        row_cols = st.columns([3, 1, 1])
+                        with row_cols[0]:
+                            st.text_input("Query", value=q.get("text",""), key=f"rel_q_{i}")
+                        with row_cols[1]:
+                            st.number_input("Gewicht", min_value=0.1, max_value=5.0, value=float(q.get("weight",1.0)), step=0.1, key=f"rel_w_{i}")
+                        with row_cols[2]:
+                            if st.button("Entfernen", key=f"rel_rm_{i}"):
+                                st.session_state["rel_queries"].pop(i)
+                                st.rerun()
+                    if st.button("Query hinzufügen"):
+                        st.session_state["rel_queries"].append({"text": "", "weight": 1.0})
+                    # Sync back inputs
+                    synced = []
+                    for i in range(len(st.session_state["rel_queries"])):
+                        synced.append({
+                            "text": st.session_state.get(f"rel_q_{i}", ""),
+                            "weight": st.session_state.get(f"rel_w_{i}", 1.0),
+                        })
+                    st.session_state["rel_queries"] = synced
+                    relevance_query = " ".join([q["text"] for q in synced if q.get("text")])
                 else:
-                    st.session_state["relevance_query"] = relevance_query.strip()
-                    if advanced_rel:
-                        rel_series = compute_relevance_scores_multi(
-                            df,
-                            st.session_state.get("rel_queries", []),
-                            min_text_len=min_len,
-                        )
-                    else:
-                        rel_series = compute_relevance_scores(
-                            df,
-                            relevance_query.strip(),
-                            min_text_len=min_len,
-                        )
-                    if rel_series is None:
-                        st.warning("Konnte keine Werte berechnen.")
-                    else:
-                        # In DataFrame übernehmen
-                        df["relevance_score"] = rel_series
-                        # Warum relevant? (simple term overlap)
-                        combined_query = relevance_query.strip()
-                        why_list = []
-                        for _, row in df.iterrows():
-                            text = (str(row.get("abstract","")) + " " + str(row.get("title",""))).strip()
-                            why_list.append(_why_relevant(combined_query, text))
-                        df["relevance_why"] = why_list
-                        st.session_state["results_df"] = df
-                        st.success("Berechnet!")
-                        st.rerun()
+                    relevance_query = st.text_area(
+                        "Forschungsinteresse / Fragestellung:",
+                        value=st.session_state.get("relevance_query_input", ""),
+                        height=150,
+                        help="Beispiel: 'transformational leadership, follower well-being, mediated by trust'",
+                        key="relevance_query_detail",
+                    )
 
-        with rel_col_right:
-            st.markdown("#### Top 10 Ergebnisse")
-            if "relevance_score" in df.columns:
-                top_df = df.sort_values("relevance_score", ascending=False).head(10)
-                # Hier rendern wir ebenfalls die vollwertigen Karten
-                for r_idx, (_, row) in enumerate(top_df.iterrows()):
-                    render_row_ui(row, f"rel_top_{r_idx}")
-            else:
-                st.caption("Gib links dein Thema ein und klicke auf Berechnen, um die Top 10 zu sehen.")
+                min_len = st.slider(
+                    "Min. Textlänge (Zeichen)",
+                    min_value=20,
+                    max_value=100,
+                    value=30,
+                    step=5,
+                    key="relevance_min_text_len",
+                )
+
+                if st.button("⭐ Relevanz berechnen", use_container_width=True, key="btn_compute_relevance"):
+                    if not relevance_query.strip():
+                        st.warning("Bitte gib eine Beschreibung ein.")
+                    else:
+                        st.session_state["relevance_query"] = relevance_query.strip()
+                        if advanced_rel:
+                            rel_series = compute_relevance_scores_multi(
+                                df,
+                                st.session_state.get("rel_queries", []),
+                                min_text_len=min_len,
+                            )
+                        else:
+                            rel_series = compute_relevance_scores(
+                                df,
+                                relevance_query.strip(),
+                                min_text_len=min_len,
+                            )
+                        if rel_series is None:
+                            st.warning("Konnte keine Werte berechnen.")
+                        else:
+                            # In DataFrame übernehmen
+                            df["relevance_score"] = rel_series
+                            # Warum relevant? (simple term overlap)
+                            combined_query = relevance_query.strip()
+                            why_list = []
+                            for _, row in df.iterrows():
+                                text = (str(row.get("abstract","")) + " " + str(row.get("title",""))).strip()
+                                why_list.append(_why_relevant(combined_query, text))
+                            df["relevance_why"] = why_list
+                            st.session_state["results_df"] = df
+                            st.success("Berechnet!")
+                            st.rerun()
+
+            with rel_col_right:
+                st.markdown("#### Top 10 Ergebnisse")
+                if "relevance_score" in df.columns:
+                    top_df = df.sort_values("relevance_score", ascending=False).head(10)
+                    # Hier rendern wir ebenfalls die vollwertigen Karten
+                    for r_idx, (_, row) in enumerate(top_df.iterrows()):
+                        render_row_ui(row, f"rel_top_{r_idx}")
+                else:
+                    st.caption("Gib links dein Thema ein und klicke auf Berechnen, um die Top 10 zu sehen.")
 
     st.markdown("---")
     st.caption("Klicke auf die Checkboxen (egal in welcher Liste), um Einträge für den E-Mail-Versand auszuwählen.")
@@ -2253,33 +2285,38 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             st.session_state["selected_dois"] |= set(top["doi"].astype(str).str.lower())
             st.rerun()
 
-    st.markdown("#### 📁 Collections")
-    col_cols = st.columns([2, 1, 1])
-    with col_cols[0]:
-        col_name = st.text_input("Collection-Name", value="")
-    with col_cols[1]:
-        if st.button("Zur Collection hinzufügen", use_container_width=True):
-            if not col_name.strip():
-                st.warning("Bitte einen Collection-Namen angeben.")
-            elif not st.session_state["selected_dois"]:
-                st.warning("Bitte zuerst DOIs auswählen.")
-            else:
-                coll = st.session_state["collections"].get(col_name.strip(), set())
-                coll = set(coll) | set(st.session_state["selected_dois"])
-                st.session_state["collections"][col_name.strip()] = coll
-                st.success(f"{len(st.session_state['selected_dois'])} DOI(s) hinzugefügt.")
-    with col_cols[2]:
-        if st.session_state["collections"]:
-            if st.button("Alle Collections löschen", use_container_width=True):
-                st.session_state["collections"] = {}
-                st.success("Collections gelöscht.")
+    collections_exp = section_card(
+        "📁 Collections",
+        "Gruppiere ausgewählte Papers in benannten Sammlungen für spätere Arbeit.",
+        "exp_collections",
+    )
+    with collections_exp:
+        col_cols = st.columns([2, 1, 1])
+        with col_cols[0]:
+            col_name = st.text_input("Collection-Name", value="")
+        with col_cols[1]:
+            if st.button("Zur Collection hinzufügen", use_container_width=True):
+                if not col_name.strip():
+                    st.warning("Bitte einen Collection-Namen angeben.")
+                elif not st.session_state["selected_dois"]:
+                    st.warning("Bitte zuerst DOIs auswählen.")
+                else:
+                    coll = st.session_state["collections"].get(col_name.strip(), set())
+                    coll = set(coll) | set(st.session_state["selected_dois"])
+                    st.session_state["collections"][col_name.strip()] = coll
+                    st.success(f"{len(st.session_state['selected_dois'])} DOI(s) hinzugefügt.")
+        with col_cols[2]:
+            if st.session_state["collections"]:
+                if st.button("Alle Collections löschen", use_container_width=True):
+                    st.session_state["collections"] = {}
+                    st.success("Collections gelöscht.")
 
-    if st.session_state["collections"]:
-        for name, doi_set in st.session_state["collections"].items():
-            with st.expander(f"📁 {name} ({len(doi_set)})", expanded=False):
-                sub_df = df[df["doi"].astype(str).str.lower().isin({d.lower() for d in doi_set})]
-                for r_idx, (_, row) in enumerate(sub_df.iterrows()):
-                    render_row_ui(row, f"coll_{name}_{r_idx}")
+        if st.session_state["collections"]:
+            for name, doi_set in st.session_state["collections"].items():
+                with st.expander(f"📁 {name} ({len(doi_set)})", expanded=False):
+                    sub_df = df[df["doi"].astype(str).str.lower().isin({d.lower() for d in doi_set})]
+                    for r_idx, (_, row) in enumerate(sub_df.iterrows()):
+                        render_row_ui(row, f"coll_{name}_{r_idx}")
 
     st.markdown("---") # Visueller Trenner
     # --- NEU: Fixierte Pfeil-Navigation (Start/Ende) ---
@@ -2371,94 +2408,98 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # --- ENDE NEU ---
 
     # --- Download & E-Mail (neu gruppiert) ---
-    st.subheader("🏁 Aktionen: Download & Versand")
+    actions_exp = section_card(
+        "🏁 Aktionen: Download & Versand",
+        "Exportiere Ergebnisse oder sende DOI-Listen per E-Mail.",
+        "exp_actions",
+    )
+    with actions_exp:
+        dl_col, mail_col = st.columns(2)
 
-    dl_col, mail_col = st.columns(2)
+        with dl_col:
+            st.markdown("#### ⬇️ Download")
+            def df_to_excel_bytes(df_in: pd.DataFrame) -> BytesIO | None:
+                engine = _pick_excel_engine()
+                if engine is None: return None
+                out = BytesIO()
+                with pd.ExcelWriter(out, engine=engine) as writer:
+                    df_in.to_excel(writer, index=False, sheet_name="results")
+                out.seek(0)
+                return out
 
-    with dl_col:
-        st.markdown("#### ⬇️ Download")
-        def df_to_excel_bytes(df_in: pd.DataFrame) -> BytesIO | None:
-            engine = _pick_excel_engine()
-            if engine is None: return None
-            out = BytesIO()
-            with pd.ExcelWriter(out, engine=engine) as writer:
-                df_in.to_excel(writer, index=False, sheet_name="results")
-            out.seek(0)
-            return out
+            def _df_to_csv_bytes(df_in: pd.DataFrame) -> BytesIO:
+                b = BytesIO()
+                b.write(df_in.to_csv(index=False).encode("utf-8"))
+                b.seek(0)
+                return b
 
-        def _df_to_csv_bytes(df_in: pd.DataFrame) -> BytesIO:
-            b = BytesIO()
-            b.write(df_in.to_csv(index=False).encode("utf-8"))
-            b.seek(0)
-            return b
-
-        x_all = df_to_excel_bytes(df)
-        if x_all is not None:
-            st.download_button(
-                "Excel — alle Ergebnisse",
-                data=x_all,
-                file_name="paperscout_results.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        else:
-            st.download_button(
-                "CSV — alle Ergebnisse",
-                data=_df_to_csv_bytes(df),
-                file_name="paperscout_results.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-
-        if st.session_state["selected_dois"]:
-            df_sel = df[df["doi"].astype(str).str.lower().isin(st.session_state["selected_dois"])].copy()
-            x_sel = df_to_excel_bytes(df_sel)
-            if x_sel is not None:
+            x_all = df_to_excel_bytes(df)
+            if x_all is not None:
                 st.download_button(
-                    f"Excel — {len(st.session_state['selected_dois'])} ausgewählte",
-                    data=x_sel,
-                    file_name="paperscout_selected.xlsx",
+                    "Excel — alle Ergebnisse",
+                    data=x_all,
+                    file_name="paperscout_results.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
             else:
-                 st.download_button(
-                    f"CSV — {len(st.session_state['selected_dois'])} ausgewählte",
-                    data=_df_to_csv_bytes(df_sel),
-                    file_name="paperscout_selected.csv",
+                st.download_button(
+                    "CSV — alle Ergebnisse",
+                    data=_df_to_csv_bytes(df),
+                    file_name="paperscout_results.csv",
                     mime="text/csv",
                     use_container_width=True
                 )
-        else:
-            st.button("Excel — nur ausgewählte", disabled=True, use_container_width=True)
 
-
-    with mail_col:
-        st.markdown("#### 📧 DOI-Liste senden")
-        with st.container(border=True):
-            sender_display = st.text_input(
-                "Absendername (z.B. Naomi oder Ralf)",
-                value="",
-            )
-            to_email = st.text_input("Empfänger-E-Mail-Adresse", key="doi_email_to")
-            
-            if st.button("DOI-Liste senden", use_container_width=True, type="primary"):
-                if not st.session_state["selected_dois"]:
-                    st.warning("Bitte wähle mindestens eine DOI aus.")
-                elif not to_email or "@" not in to_email:
-                    st.warning("Bitte gib eine gültige E-Mail-Adresse ein.")
-                else:
-                    # Ausgewählte DOIs (lowercase)
-                    sel_dois = st.session_state["selected_dois"]
-                    df_sel = df[df["doi"].astype(str).str.lower().isin(sel_dois)].copy()
-                    records = df_sel.to_dict(orient="records")
-
-                    ok, msg = send_doi_email(
-                        to_email,
-                        records,
-                        sender_display=sender_display.strip() or None
+            if st.session_state["selected_dois"]:
+                df_sel = df[df["doi"].astype(str).str.lower().isin(st.session_state["selected_dois"])].copy()
+                x_sel = df_to_excel_bytes(df_sel)
+                if x_sel is not None:
+                    st.download_button(
+                        f"Excel — {len(st.session_state['selected_dois'])} ausgewählte",
+                        data=x_sel,
+                        file_name="paperscout_selected.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
                     )
-                    st.success(msg) if ok else st.error(msg)
+                else:
+                     st.download_button(
+                        f"CSV — {len(st.session_state['selected_dois'])} ausgewählte",
+                        data=_df_to_csv_bytes(df_sel),
+                        file_name="paperscout_selected.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+            else:
+                st.button("Excel — nur ausgewählte", disabled=True, use_container_width=True)
+
+
+        with mail_col:
+            st.markdown("#### 📧 DOI-Liste senden")
+            with st.container(border=True):
+                sender_display = st.text_input(
+                    "Absendername (z.B. Naomi oder Ralf)",
+                    value="",
+                )
+                to_email = st.text_input("Empfänger-E-Mail-Adresse", key="doi_email_to")
+                
+                if st.button("DOI-Liste senden", use_container_width=True, type="primary"):
+                    if not st.session_state["selected_dois"]:
+                        st.warning("Bitte wähle mindestens eine DOI aus.")
+                    elif not to_email or "@" not in to_email:
+                        st.warning("Bitte gib eine gültige E-Mail-Adresse ein.")
+                    else:
+                        # Ausgewählte DOIs (lowercase)
+                        sel_dois = st.session_state["selected_dois"]
+                        df_sel = df[df["doi"].astype(str).str.lower().isin(sel_dois)].copy()
+                        records = df_sel.to_dict(orient="records")
+
+                        ok, msg = send_doi_email(
+                            to_email,
+                            records,
+                            sender_display=sender_display.strip() or None
+                        )
+                        st.success(msg) if ok else st.error(msg)
 
 else:
     st.info("Noch keine Ergebnisse geladen. Wähle Journals im Command Center und starte den Run.")
