@@ -1328,6 +1328,16 @@ CARD_STYLE_V3 = """
     .ps-chip.hot {
         background: var(--ps-accent);
     }
+    .ps-callout {
+        display: inline-block;
+        padding: 0.18rem 0.6rem;
+        border-radius: 999px;
+        background: linear-gradient(135deg, var(--ps-accent), #ff9f2e);
+        color: #fff;
+        font-size: 0.72rem;
+        font-weight: 700;
+        margin-bottom: 0.4rem;
+    }
 </style>
 """
 st.markdown(CARD_STYLE_V3, unsafe_allow_html=True)
@@ -1722,10 +1732,15 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
 
     sort_col1, sort_col2 = st.columns([1, 3])
     with sort_col1:
+        sort_options = ["Neueste zuerst", "Älteste zuerst", "Signal-Score", "Relevanz", "Titel (A-Z)"]
+        if "relevance_score" in df.columns and df["relevance_score"].notna().any():
+            default_sort = "Relevanz"
+        else:
+            default_sort = "Neueste zuerst"
         sort_by = st.selectbox(
             "Sortieren",
-            ["Neueste zuerst", "Älteste zuerst", "Signal-Score", "Relevanz", "Titel (A-Z)"],
-            index=0,
+            sort_options,
+            index=sort_options.index(default_sort),
         )
     if sort_by == "Neueste zuerst":
         df["_issued_dt"] = df.get("issued", "").astype(str).apply(_safe_parse_date)
@@ -1733,10 +1748,18 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     elif sort_by == "Älteste zuerst":
         df["_issued_dt"] = df.get("issued", "").astype(str).apply(_safe_parse_date)
         df = df.sort_values("_issued_dt", ascending=True, na_position="last").drop(columns=["_issued_dt"])
-    elif sort_by == "Signal-Score" and "signal_score" in df.columns:
-        df = df.sort_values("signal_score", ascending=False, na_position="last")
-    elif sort_by == "Relevanz" and "relevance_score" in df.columns:
-        df = df.sort_values("relevance_score", ascending=False, na_position="last")
+    elif sort_by == "Signal-Score":
+        if "signal_score" in df.columns:
+            df = df.sort_values("signal_score", ascending=False, na_position="last")
+        else:
+            df["_issued_dt"] = df.get("issued", "").astype(str).apply(_safe_parse_date)
+            df = df.sort_values("_issued_dt", ascending=False, na_position="last").drop(columns=["_issued_dt"])
+    elif sort_by == "Relevanz":
+        if "relevance_score" in df.columns:
+            df = df.sort_values("relevance_score", ascending=False, na_position="last")
+        else:
+            df["_issued_dt"] = df.get("issued", "").astype(str).apply(_safe_parse_date)
+            df = df.sort_values("_issued_dt", ascending=False, na_position="last").drop(columns=["_issued_dt"])
     elif sort_by == "Titel (A-Z)":
         df = df.sort_values("title", ascending=True, na_position="last")
 
@@ -1867,13 +1890,18 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             )
             st.markdown(card_html, unsafe_allow_html=True)
 
-    def section_card(title: str, desc: str, key: str):
+    def section_card(title: str, desc: str, key: str, default_open: bool = False, accent: bool = False, show_toggle: bool = True):
         if key not in st.session_state:
-            st.session_state[key] = False
+            st.session_state[key] = default_open
         with st.container(border=True):
+            if accent:
+                st.markdown("<div class='ps-callout'>Empfohlen</div>", unsafe_allow_html=True)
             st.markdown(f"### {title}")
             st.caption(desc)
-            st.toggle("Optionen anzeigen", key=key)
+            if show_toggle:
+                st.toggle("Optionen anzeigen", key=key)
+            else:
+                st.session_state[key] = True
             body = st.container()
         return st.session_state[key], body
 
@@ -2142,6 +2170,8 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         "🎯 Relevanz-Rating (Beta)",
         "Bewertet Papers nach semantischer Nähe zu deinem Forschungsfokus.",
         "exp_relevance",
+        default_open=True,
+        accent=True,
     )
     if rel_open:
         with rel_body:
@@ -2422,6 +2452,8 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         "🏁 Aktionen: Download & Versand",
         "Exportiere Ergebnisse oder sende DOI-Listen per E-Mail.",
         "exp_actions",
+        default_open=True,
+        show_toggle=False,
     )
     if actions_open:
         with actions_body:
