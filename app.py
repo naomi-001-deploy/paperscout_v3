@@ -357,7 +357,7 @@ ALT_ISSN: Dict[str, List[str]] = {
     "Administrative Science Quarterly": ["1930-3815"],
 }
 
-def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: int) -> List[Dict[str, Any]]:
+def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: int, query: Optional[str] = None) -> List[Dict[str, Any]]:
     mailto = os.getenv("CROSSREF_MAILTO") or "you@example.com"
     base_filters = [
         ("from-pub-date", "until-pub-date"),
@@ -365,26 +365,28 @@ def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: in
         ("from-print-pub-date", "until-print-pub-date"),
     ]
 
+    q = f"&query.title={quote_plus(query)}" if query else ""
+
     def _mk_urls(_issn: str, with_dates: bool) -> List[str]:
         if with_dates:
             url_list: List[str] = []
             for f_from, f_until in base_filters:
                 filt = f"{f_from}:{since},{f_until}:{until},type:journal-article"
                 url_list.extend([
-                    f"{CR_BASE}/journals/{_issn}/works?filter={filt}&sort=published&order=desc&rows={rows}&mailto={mailto}",
-                    f"{CR_BASE}/works?filter=issn:{_issn},{filt}&sort=published&order=desc&rows={rows}&mailto={mailto}",
+                    f"{CR_BASE}/journals/{_issn}/works?filter={filt}&sort=published&order=desc&rows={rows}&mailto={mailto}{q}",
+                    f"{CR_BASE}/works?filter=issn:{_issn},{filt}&sort=published&order=desc&rows={rows}&mailto={mailto}{q}",
                 ])
             for f_from, f_until in base_filters:
                 filt = f"{f_from}:{since},{f_until}:{until},type:journal-article"
                 url_list.append(
-                    f"{CR_BASE}/works?query.container-title={quote_plus(journal)}&filter={filt}&sort=published&order=desc&rows={rows}&mailto={mailto}"
+                    f"{CR_BASE}/works?query.container-title={quote_plus(journal)}&filter={filt}&sort=published&order=desc&rows={rows}&mailto={mailto}{q}"
                 )
             return url_list
         else:
             return [
-                f"{CR_BASE}/journals/{_issn}/works?filter=type:journal-article&sort=published&order=desc&rows={rows}&mailto={mailto}",
-                f"{CR_BASE}/works?filter=issn:{_issn},type:journal-article&sort=published&order=desc&rows={rows}&mailto={mailto}",
-                f"{CR_BASE}/works?query.container-title={quote_plus(journal)}&filter=type:journal-article&sort=published&order=desc&rows={rows}&mailto={mailto}",
+                f"{CR_BASE}/journals/{_issn}/works?filter=type:journal-article&sort=published&order=desc&rows={rows}&mailto={mailto}{q}",
+                f"{CR_BASE}/works?filter=issn:{_issn},type:journal-article&sort=published&order=desc&rows={rows}&mailto={mailto}{q}",
+                f"{CR_BASE}/works?query.container-title={quote_plus(journal)}&filter=type:journal-article&sort=published&order=desc&rows={rows}&mailto={mailto}{q}",
             ]
 
     issn_candidates = [issn] + ALT_ISSN.get(journal, [])
@@ -571,12 +573,29 @@ def fetch_sciencedirect_abstract(doi_or_url: str) -> Optional[str]:
 # =========================
 # Hauptpipeline
 # =========================
-def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) -> List[Dict[str, Any]]:
+def collect_all(
+    journal: str,
+    since: str,
+    until: str,
+    rows: int,
+    ai_model: str,
+    topic_query: Optional[str] = None,
+    options: Optional[Dict[str, bool]] = None,
+) -> List[Dict[str, Any]]:
+    opts = {
+        "use_semantic": True,
+        "use_openalex": True,
+        "use_html": True,
+        "use_ai": True,
+        "use_scidir": True,
+    }
+    if options:
+        opts.update(options)
     issn = JOURNAL_ISSN.get(journal)
     if not issn:
         return []
 
-    base = fetch_crossref_any(journal, issn, since, until, rows)
+    base = fetch_crossref_any(journal, issn, since, until, rows, query=topic_query)
     out: List[Dict[str, Any]] = []
 
     if not base:
@@ -584,22 +603,28 @@ def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) 
 
     for rec in base:
         if rec.get("abstract"):
+            rec["abstract_source"] = "crossref"
             out.append(rec)
             continue
 
         doi = rec.get("doi", "")
 
         for fn in (fetch_semantic, fetch_openalex):
+            if fn == fetch_semantic and not opts.get("use_semantic", True):
+                continue
+            if fn == fetch_openalex and not opts.get("use_openalex", True):
+                continue
             if not doi:
                 break
             data = fn(doi)
             if data and data.get("abstract"):
+                rec["abstract_source"] = "semantic" if fn == fetch_semantic else "openalex"
                 for k in ["title", "authors", "journal", "issued", "abstract", "url"]:
                     if not rec.get(k):
                         rec[k] = data.get(k)
                 break
 
-        if not rec.get("abstract"):
+        if not rec.get("abstract") and opts.get("use_scidir", True):
             is_sd_url = "sciencedirect.com" in (rec.get("url","") or "")
             is_sd_journal = (issn == "1048-9843") 
             
@@ -607,15 +632,17 @@ def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) 
                 abs_text = fetch_sciencedirect_abstract(rec.get("url") or rec.get("doi",""))
                 if abs_text:
                     rec["abstract"] = abs_text
+                    rec["abstract_source"] = "sciencedirect"
 
-        if not rec.get("abstract") and rec.get("url"):
+        if not rec.get("abstract") and rec.get("url") and opts.get("use_html", True):
             html_text = fetch_html(rec["url"])
             if html_text:
                 abs_simple = extract_abstract_from_html_simple(html_text)
                 if abs_simple:
                     rec["abstract"] = abs_simple
+                    rec["abstract_source"] = "html"
 
-        if not rec.get("abstract") and rec.get("url"):
+        if not rec.get("abstract") and rec.get("url") and opts.get("use_ai", True):
             html_text = fetch_html(rec["url"])
             if html_text:
                 ai = ai_extract_metadata_from_html(html_text, ai_model)
@@ -623,6 +650,11 @@ def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) 
                     for k in ["title", "authors", "journal", "issued", "abstract", "doi", "url"]:
                         if not rec.get(k) and ai.get(k):
                             rec[k] = ai.get(k)
+                    if ai.get("abstract"):
+                        rec["abstract_source"] = "ai"
+
+        if not rec.get("abstract"):
+            rec["abstract_source"] = rec.get("abstract_source") or "none"
 
         out.append(rec)
 
@@ -746,6 +778,44 @@ def _ai_name_cluster(examples: List[str], model: str = "gpt-4o-mini") -> Optiona
         label = (resp.choices[0].message.content or "").strip()
         label = re.sub(r'^[\"“”]+|[\"“”]+$', '', label).strip()
         return label or None
+    except Exception:
+        return None
+
+def ai_generate_digest(records: List[Dict[str, Any]], model: str = "gpt-4o-mini", lang: str = "Deutsch") -> Optional[str]:
+    key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not key or not records:
+        return None
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+        items = []
+        for r in records[:12]:
+            title = _clean_text(str(r.get("title","")))
+            journal = _clean_text(str(r.get("journal","")))
+            issued = _clean_text(str(r.get("issued","")))
+            abstract = _clean_text(str(r.get("abstract","")))[:900]
+            items.append(f"TITLE: {title}\nJOURNAL: {journal}\nDATE: {issued}\nABSTRACT: {abstract}")
+        payload = "\n\n---\n\n".join(items)
+        system_msg = (
+            "You are a research analyst who produces concise, high-signal digests of recent papers."
+        )
+        user_msg = (
+            f"Language: {lang}. Create a digest with these sections:\n"
+            "1) Executive summary (4-6 bullets)\n"
+            "2) Emerging themes (3 bullets)\n"
+            "3) Open questions (3 bullets)\n"
+            "4) Recommended papers (5 bullets, include title + one-line why)\n\n"
+            f"PAPERS:\n{payload}"
+        )
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.3,
+        )
+        return (resp.choices[0].message.content or "").strip()
     except Exception:
         return None
 
@@ -919,6 +989,38 @@ def compute_relevance_scores_multi(
         sim = max(sim, 0.0)
         scores[idx] = round(sim * 100, 1)
     return pd.Series(scores, name="relevance_score") if scores else None
+
+def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "issued" not in df.columns:
+        return df
+    dates = []
+    for d in df["issued"].astype(str).tolist():
+        dt = _safe_parse_date(d)
+        dates.append(dt)
+    valid_dates = [d for d in dates if d]
+    if not valid_dates:
+        return df
+    ref_date = max(valid_dates)
+    days_ago = []
+    for d in dates:
+        if not d:
+            days_ago.append(None)
+        else:
+            days_ago.append((ref_date - d).days)
+    max_days = max([d for d in days_ago if d is not None] or [1])
+    recency_scores = []
+    for d in days_ago:
+        if d is None:
+            recency_scores.append(0.0)
+        else:
+            recency_scores.append(round((1 - (d / max_days)) * 100, 1))
+    df["days_ago"] = days_ago
+    if "relevance_score" in df.columns:
+        rel = df["relevance_score"].fillna(0.0)
+        df["signal_score"] = (rel * 0.6 + pd.Series(recency_scores) * 0.4).round(1)
+    else:
+        df["signal_score"] = pd.Series(recency_scores).round(1)
+    return df
 
 
 # =========================
@@ -1213,156 +1315,236 @@ CARD_STYLE_V3 = """
         border: 1px solid var(--ps-card-border);
         box-shadow: 0 6px 12px rgba(16,18,23,0.08);
     }
+    .ps-chip {
+        display: inline-block;
+        padding: 0.12rem 0.5rem;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        background: var(--ps-accent-2);
+        color: #fff;
+        margin-left: 0.35rem;
+    }
+    .ps-chip.hot {
+        background: var(--ps-accent);
+    }
 </style>
 """
 st.markdown(CARD_STYLE_V3, unsafe_allow_html=True)
 
 
-# --- Setup-Tabs ---
-tab1, tab2 = st.tabs(["🔍 Schritt 1: Auswahl", "⚙️ Schritt 2: Einstellungen"])
+# --- Command Center (ohne Tabs) ---
 journals = sorted(JOURNAL_ISSN.keys())
 today = date.today()
 
-with tab1:
-    st.markdown("#### Journals auswählen")
+st.markdown("## Command Center")
+left, mid, right = st.columns([2.1, 1.3, 1.2])
 
-    sel_all_col, desel_all_col, _ = st.columns([1, 1, 4])
-    with sel_all_col:
-        select_all_clicked = st.button("Alle **Journals** auswählen", use_container_width=True)
-    with desel_all_col:
-        deselect_all_clicked = st.button("Alle **Journals** abwählen", use_container_width=True)
+with left:
+    with st.container(border=True):
+        st.markdown("### 🧭 Scope & Journals")
+        journal_filter = st.text_input("Journal suchen (Filter)", value="", key="journal_filter_input")
 
-    if select_all_clicked:
-        for j in journals:
-            st.session_state[_chk_key(j)] = True
-    if deselect_all_clicked:
-        for j in journals:
-            st.session_state[_chk_key(j)] = False
+        sel_all_col, desel_all_col = st.columns([1, 1])
+        with sel_all_col:
+            select_all_clicked = st.button("Alle auswählen", use_container_width=True)
+        with desel_all_col:
+            deselect_all_clicked = st.button("Alle abwählen", use_container_width=True)
 
-    chosen: List[str] = []
-    cols = st.columns(3)
-    for idx, j in enumerate(journals):
-        k = _chk_key(j)
-        current_val = st.session_state.get(k, False)
-        with cols[idx % 3]:
-            if st.checkbox(j, value=current_val, key=k):
-                chosen.append(j)
+        if select_all_clicked:
+            for j in journals:
+                st.session_state[_chk_key(j)] = True
+        if deselect_all_clicked:
+            for j in journals:
+                st.session_state[_chk_key(j)] = False
 
-    st.markdown(f"**{len(chosen)}** Journal(s) ausgewählt.")
-    st.session_state["chosen_journals"] = chosen
-    st.divider()
-    
-    st.markdown("#### Zeitraum definieren")
-    date_col1, date_col2, date_col3 = st.columns(3)
-    with date_col1:
-        if "since_input" not in st.session_state:
-            st.session_state["since_input"] = date(today.year, 1, 1)
-        since = st.date_input("Seit (inkl.)", value=st.session_state["since_input"], key="since_input")
-    with date_col2:
-        if "until_input" not in st.session_state:
-            st.session_state["until_input"] = today
-        until = st.date_input("Bis (inkl.)", value=st.session_state["until_input"], key="until_input")
-    with date_col3:
-        st.markdown("<br>", unsafe_allow_html=True) # Kleiner Layout-Hack für die Höhe
-        last30 = st.checkbox("Nur letzte 30 Tage", value=False, key="last30_input")
+        filtered = [j for j in journals if journal_filter.lower().strip() in j.lower()] if journal_filter.strip() else journals
+        cols = st.columns(2)
+        for idx, j in enumerate(filtered):
+            k = _chk_key(j)
+            current_val = st.session_state.get(k, False)
+            with cols[idx % 2]:
+                if st.checkbox(j, value=current_val, key=k):
+                    pass
+
+        chosen = [j for j in journals if st.session_state.get(_chk_key(j), False)]
+        st.markdown(f"**{len(chosen)}** Journal(s) ausgewählt.")
+        st.session_state["chosen_journals"] = chosen
+
+    with st.container(border=True):
+        st.markdown("### 🗓️ Zeitfenster")
+        date_col1, date_col2, date_col3 = st.columns(3)
+        with date_col1:
+            if "since_input" not in st.session_state:
+                st.session_state["since_input"] = date(today.year, 1, 1)
+            since = st.date_input("Seit (inkl.)", value=st.session_state["since_input"], key="since_input")
+        with date_col2:
+            if "until_input" not in st.session_state:
+                st.session_state["until_input"] = today
+            until = st.date_input("Bis (inkl.)", value=st.session_state["until_input"], key="until_input")
+        with date_col3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            last30 = st.checkbox("Letzte 30 Tage", value=False, key="last30_input")
+            last7 = st.checkbox("Letzte 7 Tage", value=False, key="last7_input")
+            last1 = st.checkbox("Letzter Tag", value=False, key="last1_input")
         if last30:
             st.caption(f"Aktiv: {(today - timedelta(days=30)).isoformat()} bis {today.isoformat()}")
-        last7 = st.checkbox("Nur letzte 7 Tage", value=False, key="last7_input")
         if last7:
             st.caption(f"Aktiv: {(today - timedelta(days=7)).isoformat()} bis {today.isoformat()}")
-        last1 = st.checkbox("Nur letzter Tag", value=False, key="last1_input")
         if last1:
             st.caption(f"Aktiv: {(today - timedelta(days=1)).isoformat()} bis {today.isoformat()}")
-            
 
-with tab2:
-    st.markdown("#### Technische Einstellungen")
-    if "rows_input" not in st.session_state:
-        st.session_state["rows_input"] = 100
-    if "ai_model_input" not in st.session_state:
-        st.session_state["ai_model_input"] = "gpt-4o-mini"
-    rows = st.number_input("Max. Treffer pro Journal", min_value=5, max_value=200, step=5, value=st.session_state["rows_input"], key="rows_input")
-    ai_model = st.text_input("OpenAI Modell (für Abstract-Fallback)", value=st.session_state["ai_model_input"], key="ai_model_input")
-    
-    st.markdown("#### API-Keys & E-Mails")
-    api_key_input = st.text_input("🔑 OpenAI API-Key", type="password", value="", help="Optional. Wird für Artikel ohne Abstract benötigt.")
-    
-    # Manuelle Eingabe auch wieder wie im alten Code unterstützen (Env Variable setzen)
-    if api_key_input:
-        os.environ["PAPERSCOUT_OPENAI_API_KEY"] = api_key_input
-        os.environ["OPENAI_API_KEY"] = api_key_input # Für Libraries
-        st.caption("API-Key für diese Sitzung gesetzt.")
-        
-    crossref_mail = st.text_input("📧 Crossref Mailto (empfohlen)", value=os.getenv("CROSSREF_MAILTO", ""), help="Eine E-Mail-Adresse verbessert die Zuverlässigkeit der Crossref-API.")
-    if crossref_mail:
-        os.environ["CROSSREF_MAILTO"] = crossref_mail
-        st.caption("Crossref-Mailto für diese Sitzung gesetzt.")
+with mid:
+    with st.container(border=True):
+        st.markdown("### 🚀 Discovery Mode")
+        mode = st.radio(
+            "Modus",
+            ["Scout (schnell)", "Focus (balanciert)", "Deep (maximale Abdeckung)"],
+            index=1,
+            key="discovery_mode",
+        )
 
-    st.markdown("#### Netzwerk & Versand")
-    proxy_url = st.text_input("🌐 Proxy (optional)", value=os.getenv("PAPERSCOUT_PROXY", ""), help="Format: http://user:pass@host:port")
-    if proxy_url:
-        st.session_state["proxy_url"] = proxy_url.strip()
-        st.success("Proxy für diese Sitzung aktiv.")
-    else:
-        st.session_state["proxy_url"] = ""
+        if "rows_input" not in st.session_state:
+            st.session_state["rows_input"] = 100
+        if "ai_model_input" not in st.session_state:
+            st.session_state["ai_model_input"] = "gpt-4o-mini"
 
-    with st.expander("✉️ E-Mail Versand (Status)", expanded=False):
-        ok = all(os.getenv(k) for k in ["EMAIL_HOST","EMAIL_PORT","EMAIL_USER","EMAIL_PASSWORD","EMAIL_FROM"])
-        if ok:
-            st.success(f"SMTP konfiguriert für: {os.getenv('EMAIL_FROM')}")
-        else:
-            st.error("SMTP nicht vollständig konfiguriert. Bitte Secrets/Env setzen.")
+        if "use_semantic" not in st.session_state:
+            st.session_state["use_semantic"] = True
+        if "use_openalex" not in st.session_state:
+            st.session_state["use_openalex"] = True
+        if "use_html" not in st.session_state:
+            st.session_state["use_html"] = True
+        if "use_ai" not in st.session_state:
+            st.session_state["use_ai"] = False
+        if "use_scidir" not in st.session_state:
+            st.session_state["use_scidir"] = True
 
-    st.markdown("#### 💾 Gespeicherte Suchen")
-    ss_cols = st.columns([2, 1, 1])
-    with ss_cols[0]:
-        save_name = st.text_input("Name für aktuelle Suche", value="")
-    with ss_cols[1]:
-        if st.button("Suche speichern", use_container_width=True):
-            if not save_name.strip():
-                st.warning("Bitte einen Namen angeben.")
+        if st.button("Modus übernehmen"):
+            if mode.startswith("Scout"):
+                st.session_state["rows_input"] = 60
+                st.session_state["use_semantic"] = True
+                st.session_state["use_openalex"] = False
+                st.session_state["use_html"] = False
+                st.session_state["use_ai"] = False
+                st.session_state["use_scidir"] = False
+            elif mode.startswith("Focus"):
+                st.session_state["rows_input"] = 100
+                st.session_state["use_semantic"] = True
+                st.session_state["use_openalex"] = True
+                st.session_state["use_html"] = True
+                st.session_state["use_ai"] = False
+                st.session_state["use_scidir"] = True
             else:
-                preset = {
-                    "name": save_name.strip(),
-                    "journals": st.session_state.get("chosen_journals", []),
-                    "since": str(st.session_state.get("since_input")),
-                    "until": str(st.session_state.get("until_input")),
-                    "last7": bool(st.session_state.get("last7_input")),
-                    "last30": bool(st.session_state.get("last30_input")),
-                    "last1": bool(st.session_state.get("last1_input")),
-                    "rows": int(st.session_state.get("rows_input", 100)),
-                    "ai_model": st.session_state.get("ai_model_input", "gpt-4o-mini"),
-                    "relevance_query": st.session_state.get("relevance_query", ""),
-                }
-                st.session_state["saved_searches"] = [p for p in st.session_state["saved_searches"] if p["name"] != preset["name"]]
-                st.session_state["saved_searches"].append(preset)
-                st.success("Gespeichert.")
-    with ss_cols[2]:
-        if st.session_state["saved_searches"]:
-            if st.button("Alle löschen", use_container_width=True):
-                st.session_state["saved_searches"] = []
-                st.success("Gelöscht.")
+                st.session_state["rows_input"] = 150
+                st.session_state["use_semantic"] = True
+                st.session_state["use_openalex"] = True
+                st.session_state["use_html"] = True
+                st.session_state["use_ai"] = True
+                st.session_state["use_scidir"] = True
+            st.success("Modus angewendet.")
 
-    if st.session_state["saved_searches"]:
-        names = [p["name"] for p in st.session_state["saved_searches"]]
-        pick = st.selectbox("Gespeicherte Suche laden", options=names, index=0)
-        if st.button("Auswahl anwenden", use_container_width=True):
-            preset = next((p for p in st.session_state["saved_searches"] if p["name"] == pick), None)
-            if preset:
-                # Journals setzen
-                for j in journals:
-                    st.session_state[_chk_key(j)] = j in preset["journals"]
-                # Datum/Flags
-                st.session_state["since_input"] = datetime.strptime(preset["since"], "%Y-%m-%d").date()
-                st.session_state["until_input"] = datetime.strptime(preset["until"], "%Y-%m-%d").date()
-                st.session_state["last7_input"] = preset.get("last7", False)
-                st.session_state["last30_input"] = preset.get("last30", False)
-                st.session_state["last1_input"] = preset.get("last1", False)
-                st.session_state["rows_input"] = preset.get("rows", 100)
-                st.session_state["ai_model_input"] = preset.get("ai_model", "gpt-4o-mini")
-                st.session_state["relevance_query"] = preset.get("relevance_query", "")
-                st.success(f"Suche geladen: {preset['name']}")
-                st.rerun()
+        rows = st.number_input("Max. Treffer pro Journal", min_value=5, max_value=300, step=5, value=st.session_state["rows_input"], key="rows_input")
+        ai_model = st.text_input("OpenAI Modell", value=st.session_state["ai_model_input"], key="ai_model_input")
+        max_total = st.slider("Max. Treffer gesamt", min_value=100, max_value=2000, value=800, step=50, key="max_total_input")
+        topic_query = st.text_input("Fokus-Keywords (optional, Crossref Filter)", value="", key="topic_query_input")
+
+        st.markdown("**Quellen & Fallbacks**")
+        st.checkbox("Semantic Scholar", value=st.session_state["use_semantic"], key="use_semantic")
+        st.checkbox("OpenAlex", value=st.session_state["use_openalex"], key="use_openalex")
+        st.checkbox("HTML-Abstracts", value=st.session_state["use_html"], key="use_html")
+        st.checkbox("AI-Extraktion (Fallback)", value=st.session_state["use_ai"], key="use_ai")
+        st.checkbox("ScienceDirect Spezial", value=st.session_state["use_scidir"], key="use_scidir")
+
+    with st.container(border=True):
+        st.markdown("### 🎯 Ziel & Fokus")
+        st.caption("Optionaler Fokustext für Relevanz-Rating & Briefing.")
+        st.text_area(
+            "Forschungsinteresse",
+            value=st.session_state.get("relevance_query_input", ""),
+            height=120,
+            key="relevance_query_input",
+        )
+
+with right:
+    with st.container(border=True):
+        st.markdown("### 🔑 Keys & Netzwerk")
+        api_key_input = st.text_input("OpenAI API-Key", type="password", value="", help="Optional. Wird für KI-Funktionen benötigt.")
+        if api_key_input:
+            os.environ["PAPERSCOUT_OPENAI_API_KEY"] = api_key_input
+            os.environ["OPENAI_API_KEY"] = api_key_input
+            st.caption("API-Key für diese Sitzung gesetzt.")
+
+        crossref_mail = st.text_input("Crossref Mailto", value=os.getenv("CROSSREF_MAILTO", ""), help="Empfohlen für stabilere Crossref-API.")
+        if crossref_mail:
+            os.environ["CROSSREF_MAILTO"] = crossref_mail
+            st.caption("Crossref-Mailto gesetzt.")
+
+        proxy_url = st.text_input("Proxy (optional)", value=os.getenv("PAPERSCOUT_PROXY", ""), help="Format: http://user:pass@host:port")
+        if proxy_url:
+            st.session_state["proxy_url"] = proxy_url.strip()
+            st.success("Proxy aktiv.")
+        else:
+            st.session_state["proxy_url"] = ""
+
+        with st.expander("E-Mail Versand (Status)", expanded=False):
+            ok = all(os.getenv(k) for k in ["EMAIL_HOST","EMAIL_PORT","EMAIL_USER","EMAIL_PASSWORD","EMAIL_FROM"])
+            if ok:
+                st.success(f"SMTP konfiguriert: {os.getenv('EMAIL_FROM')}")
+            else:
+                st.error("SMTP nicht vollständig konfiguriert.")
+
+    with st.container(border=True):
+        st.markdown("### 💾 Gespeicherte Suchen")
+        ss_cols = st.columns([2, 1, 1])
+        with ss_cols[0]:
+            save_name = st.text_input("Name", value="")
+        with ss_cols[1]:
+            if st.button("Speichern", use_container_width=True):
+                if not save_name.strip():
+                    st.warning("Bitte einen Namen angeben.")
+                else:
+                    preset = {
+                        "name": save_name.strip(),
+                        "journals": st.session_state.get("chosen_journals", []),
+                        "since": str(st.session_state.get("since_input")),
+                        "until": str(st.session_state.get("until_input")),
+                        "last7": bool(st.session_state.get("last7_input")),
+                        "last30": bool(st.session_state.get("last30_input")),
+                        "last1": bool(st.session_state.get("last1_input")),
+                        "rows": int(st.session_state.get("rows_input", 100)),
+                        "ai_model": st.session_state.get("ai_model_input", "gpt-4o-mini"),
+                        "topic_query": st.session_state.get("topic_query_input", ""),
+                        "relevance_query": st.session_state.get("relevance_query_input", ""),
+                    }
+                    st.session_state["saved_searches"] = [p for p in st.session_state["saved_searches"] if p["name"] != preset["name"]]
+                    st.session_state["saved_searches"].append(preset)
+                    st.success("Gespeichert.")
+        with ss_cols[2]:
+            if st.session_state["saved_searches"]:
+                if st.button("Löschen", use_container_width=True):
+                    st.session_state["saved_searches"] = []
+                    st.success("Gelöscht.")
+
+        if st.session_state["saved_searches"]:
+            names = [p["name"] for p in st.session_state["saved_searches"]]
+            pick = st.selectbox("Laden", options=names, index=0)
+            if st.button("Anwenden", use_container_width=True):
+                preset = next((p for p in st.session_state["saved_searches"] if p["name"] == pick), None)
+                if preset:
+                    for j in journals:
+                        st.session_state[_chk_key(j)] = j in preset["journals"]
+                    st.session_state["since_input"] = datetime.strptime(preset["since"], "%Y-%m-%d").date()
+                    st.session_state["until_input"] = datetime.strptime(preset["until"], "%Y-%m-%d").date()
+                    st.session_state["last7_input"] = preset.get("last7", False)
+                    st.session_state["last30_input"] = preset.get("last30", False)
+                    st.session_state["last1_input"] = preset.get("last1", False)
+                    st.session_state["rows_input"] = preset.get("rows", 100)
+                    st.session_state["ai_model_input"] = preset.get("ai_model", "gpt-4o-mini")
+                    st.session_state["topic_query_input"] = preset.get("topic_query", "")
+                    st.session_state["relevance_query_input"] = preset.get("relevance_query", "")
+                    st.success(f"Suche geladen: {preset['name']}")
+                    st.rerun()
 
 st.divider()
 
@@ -1371,11 +1553,14 @@ run_col1, run_col2, run_col3 = st.columns([2, 1, 2])
 with run_col2:
     run = st.button("🚀 Let´s go! Metadaten ziehen", use_container_width=True, type="primary")
 
+# Sync relevance query from input
+st.session_state["relevance_query"] = st.session_state.get("relevance_query_input", "")
+
 if run:
     if not chosen:
-        st.warning("Bitte mindestens ein Journal in Schritt 1 auswählen.")
+        st.warning("Bitte mindestens ein Journal auswählen.")
     else:
-        st.info("Starte Abruf — Crossref, Semantic Scholar, OpenAlex, KI-Fallback...")
+        st.info("Starte Abruf — Crossref, Semantic Scholar, OpenAlex, Fallbacks...")
 
         # Vorherige Ergebnisse merken für "Compare Runs"
         st.session_state["last_run_df"] = st.session_state.get("results_df", None)
@@ -1395,9 +1580,25 @@ if run:
         else:
             s_since, s_until = str(since), str(until)
 
+        options = {
+            "use_semantic": st.session_state.get("use_semantic", True),
+            "use_openalex": st.session_state.get("use_openalex", True),
+            "use_html": st.session_state.get("use_html", True),
+            "use_ai": st.session_state.get("use_ai", True),
+            "use_scidir": st.session_state.get("use_scidir", True),
+        }
+
         for i, j in enumerate(chosen, 1):
             progress.progress(min(i / max(n, 1), 1.0), f"({i}/{n}) Verarbeite: {j}")
-            rows_j = collect_all(j, s_since, s_until, int(rows), ai_model)
+            rows_j = collect_all(
+                j,
+                s_since,
+                s_until,
+                int(rows),
+                ai_model,
+                topic_query=st.session_state.get("topic_query_input","").strip() or None,
+                options=options,
+            )
             rows_j = dedup(rows_j)
             all_rows.extend(rows_j)
 
@@ -1405,8 +1606,14 @@ if run:
         if not all_rows:
             st.warning("Keine Treffer im gewählten Zeitraum/Journals gefunden.")
         else:
+            # globale Deduplizierung + Limit
+            all_rows = dedup(all_rows)
+            max_total_val = int(st.session_state.get("max_total_input", 0) or 0)
+            if max_total_val > 0:
+                all_rows = all_rows[:max_total_val]
+
             df = pd.DataFrame(all_rows)
-            cols = [c for c in ["title", "doi", "issued", "journal", "authors", "abstract", "url"] if c in df.columns]
+            cols = [c for c in ["title", "doi", "issued", "journal", "authors", "abstract", "url", "abstract_source"] if c in df.columns]
             if cols:
                 df = df[cols]
 
@@ -1477,6 +1684,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
 
     # --- Inline Filter ---
     base_df = st.session_state["results_df"].copy()
+    base_df = add_signal_scores(base_df)
     f_cols = st.columns([2, 1, 1, 1, 1])
     with f_cols[0]:
         filter_keyword = st.text_input("🔎 Keyword in Titel/Abstract", value="", key="filter_keyword")
@@ -1507,6 +1715,26 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         df = df[df.get("journal", "").isin(filter_journals)]
     if "relevance_score" in df.columns:
         df = df[df["relevance_score"].fillna(0.0) >= min_rel]
+
+    sort_col1, sort_col2 = st.columns([1, 3])
+    with sort_col1:
+        sort_by = st.selectbox(
+            "Sortieren",
+            ["Neueste zuerst", "Älteste zuerst", "Signal-Score", "Relevanz", "Titel (A-Z)"],
+            index=0,
+        )
+    if sort_by == "Neueste zuerst":
+        df["_issued_dt"] = df.get("issued", "").astype(str).apply(_safe_parse_date)
+        df = df.sort_values("_issued_dt", ascending=False, na_position="last").drop(columns=["_issued_dt"])
+    elif sort_by == "Älteste zuerst":
+        df["_issued_dt"] = df.get("issued", "").astype(str).apply(_safe_parse_date)
+        df = df.sort_values("_issued_dt", ascending=True, na_position="last").drop(columns=["_issued_dt"])
+    elif sort_by == "Signal-Score" and "signal_score" in df.columns:
+        df = df.sort_values("signal_score", ascending=False, na_position="last")
+    elif sort_by == "Relevanz" and "relevance_score" in df.columns:
+        df = df.sort_values("relevance_score", ascending=False, na_position="last")
+    elif sort_by == "Titel (A-Z)":
+        df = df.sort_values("title", ascending=True, na_position="last")
 
     def _to_http(u: str) -> str:
         if not isinstance(u, str): return ""
@@ -1540,6 +1768,8 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         issued = row.get("issued", "") or ""
         authors = row.get("authors", "") or ""
         relevance = row.get("relevance_score", None)
+        signal_score = row.get("signal_score", None)
+        days_ago = row.get("days_ago", None)
         why = row.get("relevance_why", "") or ""
         abstract = row.get("abstract", "") or ""
         
@@ -1569,6 +1799,8 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             # NEU: Relevanz prominent in der Meta-Zeile
             if relevance is not None and relevance != "" and not pd.isna(relevance):
                 meta_parts.append(f"<b>Relevanz: {relevance}/100</b>")
+            if signal_score is not None and signal_score != "" and not pd.isna(signal_score):
+                meta_parts.append(f"<b>Signal: {signal_score}/100</b>")
             
             meta_text = " · ".join([x for x in meta_parts if x])
             # Wir nutzen hier kein html.escape für meta_text komplett, weil wir <b> Tags drin haben wollen
@@ -1587,6 +1819,11 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             link_html = ""
             if link_val and link_val != doi_safe:
                 link_html = '<b>URL:</b> <a href="' + link_safe + '" target="_blank">' + link_val_safe + '</a><br>'
+
+            src = row.get("abstract_source", "") or ""
+            src_html = ""
+            if src:
+                src_html = "<b>Abstract-Quelle:</b> " + html.escape(str(src)) + "<br>"
             
             if why and relevance is not None and not pd.isna(relevance):
                 why_html = f"<div class='meta'><b>Warum relevant:</b> {html.escape(str(why))}</div>"
@@ -1599,9 +1836,16 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             else:
                 abstract_html = "<i>Kein Abstract vorhanden.</i>"
 
+            chip_html = ""
+            if days_ago is not None and not pd.isna(days_ago) and isinstance(days_ago, (int, float)):
+                if days_ago <= 7:
+                    chip_html += "<span class='ps-chip'>NEW</span>"
+            if relevance is not None and not pd.isna(relevance) and float(relevance) >= 80:
+                chip_html += "<span class='ps-chip hot'>HOT</span>"
+
             card_html = (
                 '<div class="result-card">'
-                f'<h3>{title_safe}</h3>'
+                f'<h3>{title_safe}{chip_html}</h3>'
                 f'<div class="meta">{meta_text}</div>'
                 f'<div class="authors">{authors_safe}</div>'
                 f'{why_html}'
@@ -1610,6 +1854,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
                 '<div>' +
                 doi_html +
                 link_html +
+                src_html +
                 '<br>' +
                 abstract_html +
                 '</div>'
@@ -1634,7 +1879,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     st.markdown("### 🧩 Themencluster (Beta)")
     key_openai = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not key_openai:
-        st.info("Bitte trage einen OpenAI API-Key ein (Tab 'Einstellungen'), um Themencluster zu berechnen.")
+        st.info("Bitte trage einen OpenAI API-Key ein (oben im Command Center), um Themencluster zu berechnen.")
     else:
         # Layout für Controls: Links Slider, Rechts Button
         with st.container(border=True):
@@ -1714,13 +1959,38 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         st.markdown("**Top Journals (Anzahl Treffer)**")
         st.write(", ".join([f"{j} ({c})" for j, c in journal_counts.items()]))
 
+    # Zeitverlauf (Monat)
+    month_counts = df.get("issued", pd.Series(dtype=str)).dropna().astype(str).str[:7]
+    month_counts = month_counts[month_counts.str.match(r"\d{4}-\d{2}")]
+    if not month_counts.empty:
+        st.markdown("**Publikationen pro Monat**")
+        trend_series = month_counts.value_counts().sort_index()
+        st.bar_chart(trend_series)
+
+    if trend:
+        emerging = trend.get("emerging", [])
+        if emerging:
+            st.markdown("**Query-Ideen (automatisch)**")
+            suggestions = []
+            if len(emerging) >= 3:
+                suggestions.append(", ".join(emerging[:3]))
+            if len(emerging) >= 2:
+                suggestions.append(" ".join(emerging[:2]))
+            suggestions.append(emerging[0])
+            st.write(" · ".join(suggestions[:3]))
+
+    source_counts = df.get("abstract_source", pd.Series(dtype=str)).value_counts()
+    if not source_counts.empty:
+        st.markdown("**Abstract-Quellen**")
+        st.bar_chart(source_counts)
+
     # --------------------------------------
     # 🔮 Empfehlungen (ähnliche Reads zu Auswahl)
     # --------------------------------------
     st.markdown("### 🔮 Empfohlene nächste Reads")
     rec_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not rec_key:
-        st.info("Für Empfehlungen wird ein OpenAI API-Key benötigt (Tab 'Einstellungen').")
+        st.info("Für Empfehlungen wird ein OpenAI API-Key benötigt (oben im Command Center).")
     else:
         rec_cols = st.columns([1, 3])
         with rec_cols[0]:
@@ -1783,6 +2053,48 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             else:
                 st.caption("Wähle DOIs und berechne Empfehlungen.")
 
+    # --------------------------------------
+    # 🧠 Research Brief (KI)
+    # --------------------------------------
+    st.markdown("### 🧠 Research Brief")
+    brief_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not brief_key:
+        st.info("Für den Research Brief wird ein OpenAI API-Key benötigt (oben im Command Center).")
+    else:
+        b_cols = st.columns([1, 2])
+        with b_cols[0]:
+            brief_source = st.radio(
+                "Quelle",
+                ["Auswahl", "Top Relevanz", "Alle (Limit)"],
+                index=0,
+                key="brief_source",
+            )
+            brief_n = st.slider("Anzahl Papers", min_value=3, max_value=12, value=8, step=1, key="brief_n")
+            brief_lang = st.selectbox("Sprache", ["Deutsch", "English"], index=0, key="brief_lang")
+            if st.button("Briefing erzeugen", use_container_width=True):
+                if brief_source == "Auswahl":
+                    sel = st.session_state.get("selected_dois", set())
+                    if not sel:
+                        st.warning("Bitte wähle mindestens eine DOI aus.")
+                    else:
+                        sub = df[df["doi"].astype(str).str.lower().isin(sel)].head(brief_n)
+                        brief = ai_generate_digest(sub.to_dict(orient="records"), model=ai_model, lang=brief_lang)
+                        st.session_state["research_brief"] = brief
+                elif brief_source == "Top Relevanz" and "relevance_score" in df.columns:
+                    sub = df.sort_values("relevance_score", ascending=False).head(brief_n)
+                    brief = ai_generate_digest(sub.to_dict(orient="records"), model=ai_model, lang=brief_lang)
+                    st.session_state["research_brief"] = brief
+                else:
+                    sub = df.head(brief_n)
+                    brief = ai_generate_digest(sub.to_dict(orient="records"), model=ai_model, lang=brief_lang)
+                    st.session_state["research_brief"] = brief
+        with b_cols[1]:
+            brief_text = st.session_state.get("research_brief", "")
+            if brief_text:
+                st.markdown(brief_text)
+            else:
+                st.caption("Noch kein Briefing. Quelle wählen und generieren.")
+
     st.markdown("---")
 
     # --------------------------------------
@@ -1792,7 +2104,7 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
 
     rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not rel_key:
-        st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (Tab 'Einstellungen').")
+        st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (oben im Command Center).")
     else:
         # Layout Aufteilung: Links Eingabe, Rechts Ergebnisse
         # Damit die Ergebnisse nicht "gequetscht" wirken, geben wir rechts mehr Platz
@@ -1825,14 +2137,16 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
                     })
                 st.session_state["rel_queries"] = synced
                 relevance_query = " ".join([q["text"] for q in synced if q.get("text")])
+                st.session_state["relevance_query_input"] = relevance_query
             else:
                 relevance_query = st.text_area(
                     "Forschungsinteresse / Fragestellung:",
-                    value=st.session_state.get("relevance_query", ""),
+                    value=st.session_state.get("relevance_query_input", ""),
                     height=150,
                     help="Beispiel: 'transformational leadership, follower well-being, mediated by trust'",
-                    key="relevance_query_input",
+                    key="relevance_query_detail",
                 )
+                st.session_state["relevance_query_input"] = relevance_query
 
             min_len = st.slider(
                 "Min. Textlänge (Zeichen)",
@@ -1920,6 +2234,25 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             st.rerun()
             # --- ENDE KORREKTUR 4 ---
     
+    qa_cols = st.columns([1, 1, 1])
+    with qa_cols[0]:
+        quick_n = st.slider("Quick-Pick Anzahl", min_value=5, max_value=50, value=10, step=5, key="quick_pick_n")
+    with qa_cols[1]:
+        if st.button("Top Relevanz hinzufügen", use_container_width=True):
+            if "relevance_score" in df.columns:
+                top = df.sort_values("relevance_score", ascending=False).head(quick_n)
+                st.session_state["selected_dois"] |= set(top["doi"].astype(str).str.lower())
+                st.rerun()
+            else:
+                st.warning("Bitte zuerst Relevanz berechnen.")
+    with qa_cols[2]:
+        if st.button("Neueste hinzufügen", use_container_width=True):
+            temp = df.copy()
+            temp["_issued_dt"] = temp.get("issued", "").astype(str).apply(_safe_parse_date)
+            top = temp.sort_values("_issued_dt", ascending=False).head(quick_n)
+            st.session_state["selected_dois"] |= set(top["doi"].astype(str).str.lower())
+            st.rerun()
+
     st.markdown("#### 📁 Collections")
     col_cols = st.columns([2, 1, 1])
     with col_cols[0]:
@@ -2128,4 +2461,4 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
                     st.success(msg) if ok else st.error(msg)
 
 else:
-    st.info("Noch keine Ergebnisse geladen. Wähle Journals und klicke auf „Let’s go!“")
+    st.info("Noch keine Ergebnisse geladen. Wähle Journals im Command Center und starte den Run.")
