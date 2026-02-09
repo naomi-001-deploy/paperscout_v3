@@ -1868,10 +1868,14 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             st.markdown(card_html, unsafe_allow_html=True)
 
     def section_card(title: str, desc: str, key: str):
+        if key not in st.session_state:
+            st.session_state[key] = False
         with st.container(border=True):
             st.markdown(f"### {title}")
             st.caption(desc)
-            return st.expander("Optionen anzeigen", expanded=False, key=key)
+            st.toggle("Optionen anzeigen", key=key)
+            body = st.container()
+        return st.session_state[key], body
 
     # --- Compare Runs ---
     new_df = st.session_state.get("new_since_last_run")
@@ -1886,12 +1890,13 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # --------------------------------------
     # 🧩 Themencluster (Beta) – OpenAI-Embeddings
     # --------------------------------------
-    cluster_exp = section_card(
+    cluster_open, cluster_body = section_card(
         "🧩 Themencluster (Beta)",
         "Findet thematische Gruppen in den Abstracts und vergibt automatische Clusternamen.",
         "exp_cluster",
     )
-    with cluster_exp:
+    if cluster_open:
+        with cluster_body:
         key_openai = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not key_openai:
             st.info("Bitte trage einen OpenAI API-Key ein (oben im Command Center), um Themencluster zu berechnen.")
@@ -1951,12 +1956,13 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # --------------------------------------
     # 🧭 Trends & Insights (Zeitvergleich + Journal Trends)
     # --------------------------------------
-    trends_exp = section_card(
+    trends_open, trends_body = section_card(
         "🧭 Trends & Insights",
         "Zeigt Trend-Themen, Publikationen pro Monat und Abstract-Quellen.",
         "exp_trends",
     )
-    with trends_exp:
+    if trends_open:
+        with trends_body:
         trend = _trend_summary(df, recent_days=30)
         if trend:
             st.caption(f"Zeitraum: {trend['recent_start']} bis {trend['recent_end']} (letzte 30 Tage)")
@@ -2007,12 +2013,13 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # --------------------------------------
     # 🔮 Empfehlungen (ähnliche Reads zu Auswahl)
     # --------------------------------------
-    rec_exp = section_card(
+    rec_open, rec_body = section_card(
         "🔮 Empfohlene nächste Reads",
         "Schlägt Paper vor, die deiner Auswahl semantisch ähneln.",
         "exp_recs",
     )
-    with rec_exp:
+    if rec_open:
+        with rec_body:
         rec_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not rec_key:
             st.info("Für Empfehlungen wird ein OpenAI API-Key benötigt (oben im Command Center).")
@@ -2081,12 +2088,13 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # --------------------------------------
     # 🧠 Research Brief (KI)
     # --------------------------------------
-    brief_exp = section_card(
+    brief_open, brief_body = section_card(
         "🧠 Research Brief",
         "Erzeugt ein kompaktes Briefing mit Executive Summary, Themen und Empfehlungen.",
         "exp_brief",
     )
-    with brief_exp:
+    if brief_open:
+        with brief_body:
         brief_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not brief_key:
             st.info("Für den Research Brief wird ein OpenAI API-Key benötigt (oben im Command Center).")
@@ -2130,12 +2138,13 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # --------------------------------------
     # 🎯 Relevanz-Rating (Beta) - JETZT GARANTIERT NACH ERGEBNISSEN
     # --------------------------------------
-    rel_exp = section_card(
+    rel_open, rel_body = section_card(
         "🎯 Relevanz-Rating (Beta)",
         "Bewertet Papers nach semantischer Nähe zu deinem Forschungsfokus.",
         "exp_relevance",
     )
-    with rel_exp:
+    if rel_open:
+        with rel_body:
         rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not rel_key:
             st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (oben im Command Center).")
@@ -2285,12 +2294,13 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             st.session_state["selected_dois"] |= set(top["doi"].astype(str).str.lower())
             st.rerun()
 
-    collections_exp = section_card(
+    collections_open, collections_body = section_card(
         "📁 Collections",
         "Gruppiere ausgewählte Papers in benannten Sammlungen für spätere Arbeit.",
         "exp_collections",
     )
-    with collections_exp:
+    if collections_open:
+        with collections_body:
         col_cols = st.columns([2, 1, 1])
         with col_cols[0]:
             col_name = st.text_input("Collection-Name", value="")
@@ -2408,12 +2418,13 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # --- ENDE NEU ---
 
     # --- Download & E-Mail (neu gruppiert) ---
-    actions_exp = section_card(
+    actions_open, actions_body = section_card(
         "🏁 Aktionen: Download & Versand",
         "Exportiere Ergebnisse oder sende DOI-Listen per E-Mail.",
         "exp_actions",
     )
-    with actions_exp:
+    if actions_open:
+        with actions_body:
         dl_col, mail_col = st.columns(2)
 
         with dl_col:
