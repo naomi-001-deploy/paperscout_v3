@@ -227,6 +227,7 @@ JOURNAL_ISSN: Dict[str, str] = {
     "Human Relations": "0018-7267",
     "Organization Studies": "0170-8406",
     "Organizational Research Methods": "1094-4281",
+    "Journal of Leadership and Organizational Studies": "1939-7089"
     "Journal of Organizational Behavior": "0894-3796",
     "Journal of Management Studies": "0022-2380",
     "Personnel Psychology": "0031-5826",
@@ -251,6 +252,7 @@ JOURNAL_ISSN: Dict[str, str] = {
 ALT_ISSN: Dict[str, List[str]] = {
     "Journal of Applied Psychology": ["1939-1854"],
     "Journal of Personality and Social Psychology": ["1939-1315"],
+    "Journal of Leadership and Organizational Studies": "1939-7089"
     "Journal of Occupational Health Psychology": ["1939-1307"],
     "Journal of Management": ["1557-1211"],
     "Human Relations": ["1741-282X"],
