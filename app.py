@@ -1030,7 +1030,94 @@ def send_doi_email(
 # NEUE UI (v3) - JETZT MIT DARK MODE
 # =========================
 # =========================
-st.title("🕵🏻 paperscout – Journal Service")
+st.markdown(
+    """
+    <style>
+    :root {
+        --ps-bg: radial-gradient(1200px 700px at 10% -10%, #ffe8c7 0%, rgba(255,232,199,0.0) 55%),
+                 radial-gradient(900px 600px at 90% 0%, #d8f0ff 0%, rgba(216,240,255,0.0) 55%),
+                 linear-gradient(180deg, #f7f3ef 0%, #f3f6f9 45%, #f7f7fb 100%);
+        --ps-ink: #101217;
+        --ps-ink-2: #3a3f4b;
+        --ps-ink-3: #6a7282;
+        --ps-accent: #ff6b35;
+        --ps-accent-2: #2d7ff9;
+        --ps-card: rgba(255,255,255,0.7);
+        --ps-card-border: rgba(16,18,23,0.08);
+        --ps-shadow: 0 12px 30px rgba(16,18,23,0.12);
+    }
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;500;600&display=swap');
+    html, body, [class*="stApp"] {
+        background: var(--ps-bg);
+        color: var(--ps-ink);
+        font-family: 'Manrope', sans-serif;
+    }
+    h1, h2, h3, h4, h5 {
+        font-family: 'Space Grotesk', sans-serif;
+        letter-spacing: -0.02em;
+    }
+    .ps-hero {
+        border-radius: 18px;
+        padding: 1.4rem 1.6rem;
+        background: linear-gradient(135deg, rgba(255,255,255,0.85), rgba(255,255,255,0.6));
+        border: 1px solid var(--ps-card-border);
+        box-shadow: var(--ps-shadow);
+        margin-bottom: 1rem;
+    }
+    .ps-hero-title {
+        font-size: 2rem;
+        font-weight: 700;
+        margin: 0 0 0.2rem 0;
+    }
+    .ps-hero-sub {
+        color: var(--ps-ink-2);
+        font-size: 1rem;
+        margin: 0;
+    }
+    .stTabs [data-baseweb="tab"] {
+        font-family: 'Space Grotesk', sans-serif;
+        font-weight: 600;
+    }
+    .stButton > button {
+        border-radius: 12px;
+        border: 1px solid var(--ps-card-border);
+        background: linear-gradient(180deg, #ffffff, #f3f6fb);
+        box-shadow: 0 6px 14px rgba(16,18,23,0.08);
+        transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    .stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 20px rgba(16,18,23,0.12);
+    }
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, var(--ps-accent), #ff9f2e);
+        color: #fff;
+        border: none;
+    }
+    .stTextInput input, .stTextArea textarea, .stNumberInput input, .stSelectbox select, .stMultiSelect div {
+        border-radius: 12px !important;
+        border: 1px solid var(--ps-card-border) !important;
+        background: rgba(255,255,255,0.85) !important;
+    }
+    .stExpander {
+        border-radius: 14px;
+        border: 1px solid var(--ps-card-border);
+        background: rgba(255,255,255,0.7);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    """
+    <div class="ps-hero">
+        <div class="ps-hero-title">paperscout</div>
+        <p class="ps-hero-sub">Frische Forschungssignale, kuratiert in wenigen Sekunden.</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 # Init Session State für Auswahl
 if "selected_dois" not in st.session_state:
@@ -1053,87 +1140,78 @@ CARD_STYLE_V3 = """
     Verwendet Streamlit CSS-Variablen, um sich an Light/Dark-Mode anzupassen.
     */
     .result-card {
-        /* Nimmt die "Hintergrundfarbe für Container" (hellgrau/dunkelgrau) */
-        background-color: var(--secondary-background-color); 
-        border: 1px solid var(--secondary-background-color); /* Rand in gleicher Farbe */
-        border-left: 6px solid var(--primary-color); /* Akzentfarbe (z.B. blau) */
-        border-radius: 8px;
-        padding: 1.1rem;
+        background: var(--ps-card);
+        border: 1px solid var(--ps-card-border);
+        border-left: 8px solid var(--ps-accent-2);
+        border-radius: 16px;
+        padding: 1.2rem;
         margin-bottom: 1rem;
-        /* Subtiler Schatten, der auf beiden Modi funktioniert */
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05); 
-        transition: all 0.2s ease-in-out;
+        box-shadow: var(--ps-shadow);
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+        backdrop-filter: blur(6px);
     }
     .result-card:hover {
-        /* Heller/dunkler als der Hintergrund, je nach Modus */
-        background-color: var(--background-color); 
-        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        transform: translateY(-2px);
+        transform: translateY(-3px);
+        box-shadow: 0 18px 35px rgba(16,18,23,0.16);
     }
     .result-card h3 {
-        color: var(--text-color); /* Passt sich an (schwarz/weiß) */
+        color: var(--ps-ink);
         margin-top: 0;
         margin-bottom: 0.25rem;
+        font-weight: 700;
     }
     .result-card .meta {
-        color: var(--secondary-text-color); /* Passt sich an (grau) */
+        color: var(--ps-ink-3);
         font-size: 0.9rem;
-        margin-bottom: 0.75rem;
+        margin-bottom: 0.6rem;
     }
     .result-card .authors {
-        color: var(--text-color); /* Passt sich an (schwarz/weiß) */
+        color: var(--ps-ink-2);
         font-size: 0.95rem;
-        font-weight: 500;
+        font-weight: 600;
     }
     .result-card details {
         margin-top: 1rem;
     }
     .result-card details summary {
         cursor: pointer;
-        font-weight: bold;
-        color: var(--primary-color); /* Nutzt die Akzentfarbe des Themes */
+        font-weight: 700;
+        color: var(--ps-accent);
         font-size: 0.95rem;
-        list-style-type: '➕ ';
+        list-style-type: '✦ ';
     }
     .result-card details[open] summary {
-        list-style-type: '➖ ';
+        list-style-type: '▾ ';
     }
     .result-card details > div {
-        /* Nimmt die Haupt-Hintergrundfarbe (weiß/sehr dunkelgrau) */
-        background-color: var(--background-color); 
-        border-radius: 5px;
+        background: rgba(255,255,255,0.8);
+        border-radius: 10px;
         padding: 0.75rem 1rem;
-        margin-top: 0.5rem;
-        /* Rand ist jetzt die "normale" Randfarbe */
-        border: 1px solid var(--border-color, var(--gray-300)); 
+        margin-top: 0.6rem;
+        border: 1px solid var(--ps-card-border);
     }
-    
-    /* Expliziter Fallback für Rand im Dark Mode (falls --border-color nicht gesetzt ist) */
-    html.dark .result-card details > div {
-        border: 1px solid var(--border-color, var(--gray-800));
-    }
-    
     .result-card details .abstract {
-        color: var(--text-color); /* Passt sich an */
+        color: var(--ps-ink-2);
         white-space: pre-wrap;
-        font-size: 0.9rem;
+        font-size: 0.92rem;
         line-height: 1.6;
     }
     .result-card details a {
-        color: var(--primary-color); /* Links nutzen auch Akzentfarbe */
+        color: var(--ps-accent-2);
         text-decoration: none;
+        font-weight: 600;
     }
     .result-card details a:hover {
         text-decoration: underline;
     }
 
-    /* NEU: Styles für Cluster-Karten */
     .cluster-card {
-        background-color: var(--secondary-background-color);
-        padding: 10px;
-        border-radius: 8px;
+        background: rgba(255,255,255,0.7);
+        padding: 12px;
+        border-radius: 12px;
         margin-bottom: 10px;
-        border: 1px solid var(--border-color, var(--gray-300));
+        border: 1px solid var(--ps-card-border);
+        box-shadow: 0 6px 12px rgba(16,18,23,0.08);
     }
 </style>
 """
