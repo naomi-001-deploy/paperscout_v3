@@ -1214,8 +1214,8 @@ st.markdown(
 st.markdown(
     """
     <div class="ps-hero">
-        <div class="ps-hero-title">paperscout</div>
-        <p class="ps-hero-sub">🕵🏻‍♀️ Frische Forschungsartikel, kuratiert in wenigen Sekunden.</p>
+        <div class="ps-hero-title">🕵🏻‍♀️ paperscout</div>
+        <p class="ps-hero-sub">Frische Forschungsartikel, kuratiert in wenigen Sekunden.</p>
     </div>
     """,
     unsafe_allow_html=True
