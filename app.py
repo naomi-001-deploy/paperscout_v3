@@ -5,6 +5,7 @@
 # FIX: Synchronisierung der Auswahl.
 
 import os, re, html, json, smtplib, ssl, hashlib
+from math import ceil
 from email.mime.text import MIMEText
 from email.utils import formataddr
 import streamlit as st
@@ -1629,15 +1630,20 @@ if run:
             all_rows.extend(rows_j)
 
         progress.empty()
+        status_box = st.empty()
+        status_box.info("Finalisiere Ergebnisse: Deduplizierung & Aufbereitung …")
         if not all_rows:
             st.warning("Keine Treffer im gewählten Zeitraum/Journals gefunden.")
+            status_box.empty()
         else:
             # globale Deduplizierung + Limit
+            status_box.info("Bereinige und aggregiere Treffer …")
             all_rows = dedup(all_rows)
             max_total_val = int(st.session_state.get("max_total_input", 0) or 0)
             if max_total_val > 0:
                 all_rows = all_rows[:max_total_val]
 
+            status_box.info("Baue Ergebnis-DataFrame …")
             df = pd.DataFrame(all_rows)
             cols = [c for c in ["title", "doi", "issued", "journal", "authors", "abstract", "url", "abstract_source"] if c in df.columns]
             if cols:
@@ -1648,6 +1654,7 @@ if run:
             rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
             if rel_query:
                 if rel_key:
+                    status_box.info("Berechne Relevanz (Embeddings) …")
                     min_len = int(st.session_state.get("relevance_min_text_len", 30) or 30)
                     rel_series = compute_relevance_scores(
                         df,
@@ -1663,6 +1670,7 @@ if run:
                         df["relevance_why"] = why_list
 
                         # Auto-Briefing: Top Relevanz
+                        status_box.info("Erzeuge Research Brief …")
                         top_n = int(st.session_state.get("brief_n", 8) or 8)
                         top_n = max(3, min(top_n, 12))
                         top_df = df.sort_values("relevance_score", ascending=False).head(top_n)
@@ -1692,6 +1700,7 @@ if run:
             else:
                 st.session_state["new_since_last_run"] = None
 
+            status_box.success("Ergebnisse bereit.")
             st.success(f"🎉 {len(df)} Treffer geladen!")
 
 # ================================
@@ -2335,8 +2344,87 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     elif sort_by == "Titel (A-Z)":
         df = df.sort_values("title", ascending=True, na_position="last")
 
-    st.markdown("---")
+    # --- Pagination ---
+    p_cols = st.columns([1, 1, 2])
+    with p_cols[0]:
+        page_size = st.selectbox("Ergebnisse pro Seite", [25, 50, 100], index=1, key="page_size")
+    total_pages = max(1, ceil(len(df) / page_size))
+    current_page = st.session_state.get("page_num", 1)
+    if current_page > total_pages:
+        current_page = total_pages
+    with p_cols[1]:
+        page_num = st.selectbox("Seite", list(range(1, total_pages + 1)), index=list(range(1, total_pages + 1)).index(current_page), key="page_num")
+    start_idx = (page_num - 1) * page_size
+    end_idx = start_idx + page_size
+    df_page = df.iloc[start_idx:end_idx].copy()
+    with p_cols[2]:
+        st.caption(f"Zeige {start_idx + 1}-{min(end_idx, len(df))} von {len(df)}")
+
     st.caption("Klicke auf die Checkboxen (egal in welcher Liste), um Einträge für den E-Mail-Versand auszuwählen.")
+
+    # --- Fixierte Pfeil-Navigation (Start/Ende) ---
+    FIXED_NAV_HTML = """
+    <style>
+    .fixed-nav {
+        position: fixed;
+        bottom: 1.5rem;
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: var(--secondary-background-color);
+        border: 1px solid var(--border-color, var(--gray-300));
+        border-radius: 25px;
+        padding: 0.5rem 1rem;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        z-index: 9999;
+        opacity: 0.9;
+    }
+    html.dark .fixed-nav {
+         border: 1px solid var(--border-color, var(--gray-800));
+    }
+    .fixed-nav a {
+        display: inline-block;
+        text-decoration: none;
+        color: var(--text-color);
+        font-size: 1.25rem;
+        margin: 0 0.75rem;
+        transition: transform 0.1s ease-in-out;
+    }
+    .fixed-nav a:hover {
+        transform: scale(1.2);
+        color: var(--primary-color);
+    }
+    </style>
+    
+    <div class="fixed-nav">
+        <a href="#results_top" title="Zum Anfang der Liste">⬆️</a>
+        <a href="#actions_bottom" title="Zum E-Mail Versand">⬇️</a>
+    </div>
+    """
+    st.markdown(FIXED_NAV_HTML, unsafe_allow_html=True)
+
+    # --- Keyboard Shortcuts (G / Shift+G) ---
+    components.html(
+        """
+        <script>
+        document.addEventListener('keydown', function(e) {
+          if (e.key === 'g' && !e.shiftKey) {
+            window.location.hash = '#results_top';
+          }
+          if (e.key === 'G' || (e.key === 'g' && e.shiftKey)) {
+            window.location.hash = '#actions_bottom';
+          }
+        });
+        </script>
+        """,
+        height=0,
+    )
+    st.caption("Shortcuts: `g` zum Anfang, `Shift+g` zum E-Mail-Versand.")
+
+    # --- Ergebnis-Loop (paged) ---
+    for i, (_, r) in enumerate(df_page.iterrows(), start=start_idx + 1):
+        render_row_ui(r, str(i))
+
+    st.markdown("---")
 
     # --- KORREKTUR 2 (Sync-Fix): Logik für "Alle auswählen/abwählen" ---
     # Wir müssen *vor* den Buttons eine Map aller DOIs und Keys erstellen.
@@ -2422,71 +2510,6 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
                         for r_idx, (_, row) in enumerate(sub_df.iterrows()):
                             render_row_ui(row, f"coll_{name}_{r_idx}")
 
-    st.markdown("---") # Visueller Trenner
-    # --- NEU: Fixierte Pfeil-Navigation (Start/Ende) ---
-    FIXED_NAV_HTML = """
-    <style>
-    .fixed-nav {
-        position: fixed;
-        bottom: 1.5rem; /* Abstand von unten */
-        left: 50%;
-        transform: translateX(-50%); /* Zentrierung */
-        background-color: var(--secondary-background-color);
-        border: 1px solid var(--border-color, var(--gray-300));
-        border-radius: 25px; /* Pillenform */
-        padding: 0.5rem 1rem;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        z-index: 9999; /* Über allem anderen */
-        opacity: 0.9; /* Leichte Transparenz */
-    }
-    /* Fallback für Darkmode-Rand */
-    html.dark .fixed-nav {
-         border: 1px solid var(--border-color, var(--gray-800));
-    }
-    .fixed-nav a {
-        display: inline-block;
-        text-decoration: none;
-        color: var(--text-color);
-        font-size: 1.25rem; /* Größere Pfeile */
-        margin: 0 0.75rem;
-        transition: transform 0.1s ease-in-out;
-    }
-    .fixed-nav a:hover {
-        transform: scale(1.2);
-        color: var(--primary-color); /* Akzentfarbe beim Hover */
-    }
-    </style>
-    
-    <div class="fixed-nav">
-        <a href="#results_top" title="Zum Anfang der Liste">⬆️</a>
-        <a href="#actions_bottom" title="Zum E-Mail Versand">⬇️</a>
-    </div>
-    """
-    st.markdown(FIXED_NAV_HTML, unsafe_allow_html=True)
-    # --- ENDE NEU ---
-
-    # --- Keyboard Shortcuts (G / Shift+G) ---
-    components.html(
-        """
-        <script>
-        document.addEventListener('keydown', function(e) {
-          if (e.key === 'g' && !e.shiftKey) {
-            window.location.hash = '#results_top';
-          }
-          if (e.key === 'G' || (e.key === 'g' && e.shiftKey)) {
-            window.location.hash = '#actions_bottom';
-          }
-        });
-        </script>
-        """,
-        height=0,
-    )
-    st.caption("Shortcuts: `g` zum Anfang, `Shift+g` zum E-Mail-Versand.")
-    
-    # --- Ergebnis-Loop (Neue Karten v2) ---
-    for i, (_, r) in enumerate(df.iterrows(), start=1):
-        render_row_ui(r, str(i))
-            
     st.divider()
     # --- NEU: Link "Hoch" und Anker "Unten" ---
     st.markdown(
