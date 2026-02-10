@@ -1235,14 +1235,14 @@ st.markdown(
         background: rgba(24,28,40,0.9) !important;
         color: var(--ps-ink) !important;
     }
-    /* Checkbox labels (mobile-safe) */
-    div[data-baseweb="checkbox"] label {
+    /* Checkbox labels (mobile-safe, BaseWeb) */
+    div[data-baseweb="checkbox"] * {
         color: var(--ps-ink) !important;
     }
-    html[data-theme="dark"] div[data-baseweb="checkbox"] label {
+    div[data-baseweb="checkbox"] label span {
         color: var(--ps-ink) !important;
     }
-    html[data-theme="dark"] div[data-baseweb="checkbox"] span {
+    html[data-theme="dark"] div[data-baseweb="checkbox"] * {
         color: var(--ps-ink) !important;
     }
     .stExpander {
