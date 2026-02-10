@@ -1157,6 +1157,21 @@ st.markdown(
         --ps-card-border: rgba(16,18,23,0.08);
         --ps-shadow: 0 12px 30px rgba(16,18,23,0.12);
     }
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --ps-bg: radial-gradient(1200px 700px at 10% -10%, #141821 0%, rgba(20,24,33,0.0) 55%),
+                     radial-gradient(900px 600px at 90% 0%, #0c1f2e 0%, rgba(12,31,46,0.0) 55%),
+                     linear-gradient(180deg, #0b0f16 0%, #0f1520 45%, #0b0f16 100%);
+            --ps-ink: #eef2f8;
+            --ps-ink-2: #cfd6e6;
+            --ps-ink-3: #98a3b8;
+            --ps-accent: #ff9b6a;
+            --ps-accent-2: #7ab0ff;
+            --ps-card: rgba(18,22,32,0.85);
+            --ps-card-border: rgba(255,255,255,0.08);
+            --ps-shadow: 0 14px 34px rgba(0,0,0,0.45);
+        }
+    }
     html[data-theme="dark"] {
         --ps-bg: radial-gradient(1200px 700px at 10% -10%, #1b1e2a 0%, rgba(27,30,42,0.0) 55%),
                  radial-gradient(900px 600px at 90% 0%, #102132 0%, rgba(16,33,50,0.0) 55%),
@@ -1187,6 +1202,11 @@ st.markdown(
         border: 1px solid var(--ps-card-border);
         box-shadow: var(--ps-shadow);
         margin-bottom: 1rem;
+    }
+    @media (prefers-color-scheme: dark) {
+        .ps-hero {
+            background: linear-gradient(135deg, rgba(20,24,35,0.95), rgba(14,18,28,0.75));
+        }
     }
     html[data-theme="dark"] .ps-hero {
         background: linear-gradient(135deg, rgba(24,28,40,0.9), rgba(20,24,35,0.7));
@@ -1227,6 +1247,17 @@ st.markdown(
         background: rgba(255,255,255,0.85) !important;
         color: var(--ps-ink) !important;
     }
+    @media (prefers-color-scheme: dark) {
+        .stTextInput input,
+        .stTextArea textarea,
+        .stNumberInput input,
+        .stSelectbox select,
+        .stMultiSelect div {
+            background: rgba(20,24,35,0.95) !important;
+            color: var(--ps-ink) !important;
+            border-color: rgba(255,255,255,0.08) !important;
+        }
+    }
     html[data-theme="dark"] .stTextInput input,
     html[data-theme="dark"] .stTextArea textarea,
     html[data-theme="dark"] .stNumberInput input,
@@ -1241,6 +1272,11 @@ st.markdown(
     }
     div[data-baseweb="checkbox"] label span {
         color: var(--ps-ink) !important;
+    }
+    @media (prefers-color-scheme: dark) {
+        div[data-baseweb="checkbox"] * {
+            color: var(--ps-ink) !important;
+        }
     }
     html[data-theme="dark"] div[data-baseweb="checkbox"] * {
         color: var(--ps-ink) !important;
