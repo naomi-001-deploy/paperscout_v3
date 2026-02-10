@@ -1145,45 +1145,45 @@ st.markdown(
     """
     <style>
     :root {
-        --ps-bg: radial-gradient(1100px 600px at 8% -10%, #fff2d9 0%, rgba(255,242,217,0.0) 60%),
-                 radial-gradient(900px 600px at 92% 0%, #e3f2ff 0%, rgba(227,242,255,0.0) 60%),
-                 linear-gradient(180deg, #fdf8f3 0%, #f6f7fb 50%, #fbfbff 100%);
-        --ps-ink: #12151c;
-        --ps-ink-2: #2e3440;
-        --ps-ink-3: #5e6a7a;
+        --ps-bg: radial-gradient(1100px 600px at 8% -10%, #fff1d6 0%, rgba(255,241,214,0.0) 60%),
+                 radial-gradient(900px 600px at 92% 0%, #e2f1ff 0%, rgba(226,241,255,0.0) 60%),
+                 linear-gradient(180deg, #fff9f2 0%, #f9fbff 50%, #fffdf8 100%);
+        --ps-ink: #0b1b3a;
+        --ps-ink-2: #122a55;
+        --ps-ink-3: #1d3a6e;
         --ps-accent: #ff7a45;
-        --ps-accent-2: #3b8bff;
-        --ps-card: rgba(255,255,255,0.92);
-        --ps-card-border: rgba(18,21,28,0.08);
-        --ps-shadow: 0 14px 30px rgba(18,21,28,0.10);
+        --ps-accent-2: #2f7bff;
+        --ps-card: rgba(255,255,255,0.96);
+        --ps-card-border: rgba(11,27,58,0.10);
+        --ps-shadow: 0 14px 30px rgba(11,27,58,0.12);
     }
     @media (prefers-color-scheme: dark) {
         :root {
-            --ps-bg: radial-gradient(1200px 700px at 12% -10%, #1a2232 0%, rgba(26,34,50,0.0) 58%),
-                     radial-gradient(900px 600px at 88% 0%, #14283a 0%, rgba(20,40,58,0.0) 58%),
-                     linear-gradient(180deg, #0e141d 0%, #101827 50%, #0e141d 100%);
-            --ps-ink: #f4f7fb;
-            --ps-ink-2: #d5dce8;
-            --ps-ink-3: #a9b3c5;
-            --ps-accent: #ff9b6a;
-            --ps-accent-2: #7fb2ff;
-            --ps-card: rgba(24,30,44,0.92);
-            --ps-card-border: rgba(255,255,255,0.10);
-            --ps-shadow: 0 16px 36px rgba(0,0,0,0.45);
+            --ps-bg: radial-gradient(1200px 700px at 12% -10%, #131a2a 0%, rgba(19,26,42,0.0) 58%),
+                     radial-gradient(900px 600px at 88% 0%, #0f2438 0%, rgba(15,36,56,0.0) 58%),
+                     linear-gradient(180deg, #0a101a 0%, #0c1422 50%, #0a101a 100%);
+            --ps-ink: #f8fbff;
+            --ps-ink-2: #e8f0ff;
+            --ps-ink-3: #d6e5ff;
+            --ps-accent: #ffb085;
+            --ps-accent-2: #8dbaff;
+            --ps-card: rgba(12,18,30,0.96);
+            --ps-card-border: rgba(248,251,255,0.12);
+            --ps-shadow: 0 16px 36px rgba(0,0,0,0.55);
         }
     }
     html[data-theme="dark"] {
-        --ps-bg: radial-gradient(1200px 700px at 12% -10%, #1a2232 0%, rgba(26,34,50,0.0) 58%),
-                 radial-gradient(900px 600px at 88% 0%, #14283a 0%, rgba(20,40,58,0.0) 58%),
-                 linear-gradient(180deg, #0e141d 0%, #101827 50%, #0e141d 100%);
-        --ps-ink: #f4f7fb;
-        --ps-ink-2: #d5dce8;
-        --ps-ink-3: #a9b3c5;
-        --ps-accent: #ff9b6a;
-        --ps-accent-2: #7fb2ff;
-        --ps-card: rgba(24,30,44,0.92);
-        --ps-card-border: rgba(255,255,255,0.10);
-        --ps-shadow: 0 16px 36px rgba(0,0,0,0.45);
+        --ps-bg: radial-gradient(1200px 700px at 12% -10%, #131a2a 0%, rgba(19,26,42,0.0) 58%),
+                 radial-gradient(900px 600px at 88% 0%, #0f2438 0%, rgba(15,36,56,0.0) 58%),
+                 linear-gradient(180deg, #0a101a 0%, #0c1422 50%, #0a101a 100%);
+        --ps-ink: #f8fbff;
+        --ps-ink-2: #e8f0ff;
+        --ps-ink-3: #d6e5ff;
+        --ps-accent: #ffb085;
+        --ps-accent-2: #8dbaff;
+        --ps-card: rgba(12,18,30,0.96);
+        --ps-card-border: rgba(248,251,255,0.12);
+        --ps-shadow: 0 16px 36px rgba(0,0,0,0.55);
     }
     @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;500;600&display=swap');
     html, body, [class*="stApp"] {
@@ -1253,9 +1253,9 @@ st.markdown(
         .stNumberInput input,
         .stSelectbox select,
         .stMultiSelect div {
-            background: rgba(36,44,62,0.95) !important;
+            background: rgba(16,24,40,0.98) !important;
             color: var(--ps-ink) !important;
-            border-color: rgba(255,255,255,0.12) !important;
+            border-color: rgba(248,251,255,0.14) !important;
         }
     }
     html[data-theme="dark"] .stTextInput input,
