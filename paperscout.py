@@ -1157,6 +1157,19 @@ st.markdown(
         --ps-card-border: rgba(16,18,23,0.08);
         --ps-shadow: 0 12px 30px rgba(16,18,23,0.12);
     }
+    html[data-theme="dark"] {
+        --ps-bg: radial-gradient(1200px 700px at 10% -10%, #1b1e2a 0%, rgba(27,30,42,0.0) 55%),
+                 radial-gradient(900px 600px at 90% 0%, #102132 0%, rgba(16,33,50,0.0) 55%),
+                 linear-gradient(180deg, #0f1117 0%, #111827 45%, #0f1117 100%);
+        --ps-ink: #f2f4f8;
+        --ps-ink-2: #d0d6e2;
+        --ps-ink-3: #9aa3b2;
+        --ps-accent: #ff8b5e;
+        --ps-accent-2: #6aa5ff;
+        --ps-card: rgba(20,24,35,0.75);
+        --ps-card-border: rgba(255,255,255,0.08);
+        --ps-shadow: 0 12px 30px rgba(0,0,0,0.35);
+    }
     @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;500;600&display=swap');
     html, body, [class*="stApp"] {
         background: var(--ps-bg);
@@ -1174,6 +1187,9 @@ st.markdown(
         border: 1px solid var(--ps-card-border);
         box-shadow: var(--ps-shadow);
         margin-bottom: 1rem;
+    }
+    html[data-theme="dark"] .ps-hero {
+        background: linear-gradient(135deg, rgba(24,28,40,0.9), rgba(20,24,35,0.7));
     }
     .ps-hero-title {
         font-size: 2rem;
@@ -1209,6 +1225,15 @@ st.markdown(
         border-radius: 12px !important;
         border: 1px solid var(--ps-card-border) !important;
         background: rgba(255,255,255,0.85) !important;
+        color: var(--ps-ink) !important;
+    }
+    html[data-theme="dark"] .stTextInput input,
+    html[data-theme="dark"] .stTextArea textarea,
+    html[data-theme="dark"] .stNumberInput input,
+    html[data-theme="dark"] .stSelectbox select,
+    html[data-theme="dark"] .stMultiSelect div {
+        background: rgba(24,28,40,0.9) !important;
+        color: var(--ps-ink) !important;
     }
     .stExpander {
         border-radius: 14px;
@@ -1431,7 +1456,7 @@ with st.expander("🗓️ Zeitfenster", expanded=True):
         if last1:
             st.caption(f"Aktiv: {(today - timedelta(days=1)).isoformat()} bis {today.isoformat()}")
 
-with st.expander("🎯 Ziel & Fokus", expanded=False):
+with st.expander("🎯 Ziel & Fokus", expanded=True):
     with st.container(border=True):
         st.markdown("<div class='ps-callout'>Empfohlen</div>", unsafe_allow_html=True)
         st.markdown("### 🎯 Ziel & Fokus")
