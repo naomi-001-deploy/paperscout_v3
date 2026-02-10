@@ -1431,7 +1431,7 @@ with st.expander("🗓️ Zeitfenster", expanded=True):
         if last1:
             st.caption(f"Aktiv: {(today - timedelta(days=1)).isoformat()} bis {today.isoformat()}")
 
-with st.expander("🎯 Ziel & Fokus", expanded=False):
+with st.expander("🎯 Ziel & Fokus", expanded=True):
     with st.container(border=True):
         st.markdown("<div class='ps-callout'>Empfohlen</div>", unsafe_allow_html=True)
         st.markdown("### 🎯 Ziel & Fokus")
