@@ -1235,6 +1235,13 @@ st.markdown(
         background: rgba(24,28,40,0.9) !important;
         color: var(--ps-ink) !important;
     }
+    .stCheckbox label, .stCheckbox span {
+        color: var(--ps-ink) !important;
+    }
+    html[data-theme="dark"] .stCheckbox label,
+    html[data-theme="dark"] .stCheckbox span {
+        color: var(--ps-ink) !important;
+    }
     .stExpander {
         border-radius: 14px;
         border: 1px solid var(--ps-card-border);
