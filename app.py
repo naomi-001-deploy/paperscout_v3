@@ -1432,66 +1432,67 @@ with left:
             st.caption(f"Aktiv: {(today - timedelta(days=1)).isoformat()} bis {today.isoformat()}")
 
 with mid:
-    with st.container(border=True):
-        st.markdown("### 🚀 Discovery Mode")
-        mode = st.radio(
-            "Modus",
-            ["Scout (schnell)", "Focus (balanciert)", "Deep (maximale Abdeckung)"],
-            index=1,
-            key="discovery_mode",
-        )
+    with st.expander("🚀 Discovery Mode (optional)", expanded=False):
+        with st.container(border=True):
+            st.markdown("### 🚀 Discovery Mode")
+            mode = st.radio(
+                "Modus",
+                ["Scout (schnell)", "Focus (balanciert)", "Deep (maximale Abdeckung)"],
+                index=1,
+                key="discovery_mode",
+            )
 
-        if "rows_input" not in st.session_state:
-            st.session_state["rows_input"] = 100
-        if "ai_model_input" not in st.session_state:
-            st.session_state["ai_model_input"] = "gpt-4.1"
-
-        if "use_semantic" not in st.session_state:
-            st.session_state["use_semantic"] = True
-        if "use_openalex" not in st.session_state:
-            st.session_state["use_openalex"] = True
-        if "use_html" not in st.session_state:
-            st.session_state["use_html"] = True
-        if "use_ai" not in st.session_state:
-            st.session_state["use_ai"] = False
-        if "use_scidir" not in st.session_state:
-            st.session_state["use_scidir"] = True
-
-        if st.button("Modus übernehmen"):
-            if mode.startswith("Scout"):
-                st.session_state["rows_input"] = 60
-                st.session_state["use_semantic"] = True
-                st.session_state["use_openalex"] = False
-                st.session_state["use_html"] = False
-                st.session_state["use_ai"] = False
-                st.session_state["use_scidir"] = False
-            elif mode.startswith("Focus"):
+            if "rows_input" not in st.session_state:
                 st.session_state["rows_input"] = 100
+            if "ai_model_input" not in st.session_state:
+                st.session_state["ai_model_input"] = "gpt-4.1"
+
+            if "use_semantic" not in st.session_state:
                 st.session_state["use_semantic"] = True
+            if "use_openalex" not in st.session_state:
                 st.session_state["use_openalex"] = True
+            if "use_html" not in st.session_state:
                 st.session_state["use_html"] = True
+            if "use_ai" not in st.session_state:
                 st.session_state["use_ai"] = False
+            if "use_scidir" not in st.session_state:
                 st.session_state["use_scidir"] = True
-            else:
-                st.session_state["rows_input"] = 150
-                st.session_state["use_semantic"] = True
-                st.session_state["use_openalex"] = True
-                st.session_state["use_html"] = True
-                st.session_state["use_ai"] = True
-                st.session_state["use_scidir"] = True
-            st.success("Modus angewendet.")
 
-        rows = st.number_input("Max. Treffer pro Journal", min_value=5, max_value=300, step=5, value=st.session_state["rows_input"], key="rows_input")
-        ai_model = st.text_input("OpenAI Modell", value=st.session_state["ai_model_input"], key="ai_model_input")
-        max_total = st.slider("Max. Treffer gesamt", min_value=100, max_value=2000, value=800, step=50, key="max_total_input")
-        topic_query = st.text_input("Fokus-Keywords (optional, Crossref Filter)", value="", key="topic_query_input")
+            if st.button("Modus übernehmen"):
+                if mode.startswith("Scout"):
+                    st.session_state["rows_input"] = 60
+                    st.session_state["use_semantic"] = True
+                    st.session_state["use_openalex"] = False
+                    st.session_state["use_html"] = False
+                    st.session_state["use_ai"] = False
+                    st.session_state["use_scidir"] = False
+                elif mode.startswith("Focus"):
+                    st.session_state["rows_input"] = 100
+                    st.session_state["use_semantic"] = True
+                    st.session_state["use_openalex"] = True
+                    st.session_state["use_html"] = True
+                    st.session_state["use_ai"] = False
+                    st.session_state["use_scidir"] = True
+                else:
+                    st.session_state["rows_input"] = 150
+                    st.session_state["use_semantic"] = True
+                    st.session_state["use_openalex"] = True
+                    st.session_state["use_html"] = True
+                    st.session_state["use_ai"] = True
+                    st.session_state["use_scidir"] = True
+                st.success("Modus angewendet.")
 
-        st.markdown("**Quellen & Fallbacks**")
-        st.checkbox("Semantic Scholar", value=st.session_state["use_semantic"], key="use_semantic")
-        st.checkbox("OpenAlex", value=st.session_state["use_openalex"], key="use_openalex")
-        st.checkbox("HTML-Abstracts", value=st.session_state["use_html"], key="use_html")
-        st.checkbox("AI-Extraktion (Fallback)", value=st.session_state["use_ai"], key="use_ai")
-        st.checkbox("ScienceDirect Spezial", value=st.session_state["use_scidir"], key="use_scidir")
+            rows = st.number_input("Max. Treffer pro Journal", min_value=5, max_value=300, step=5, value=st.session_state["rows_input"], key="rows_input")
+            ai_model = st.text_input("OpenAI Modell", value=st.session_state["ai_model_input"], key="ai_model_input")
+            max_total = st.slider("Max. Treffer gesamt", min_value=100, max_value=2000, value=800, step=50, key="max_total_input")
+            topic_query = st.text_input("Fokus-Keywords (optional, Crossref Filter)", value="", key="topic_query_input")
+
+            st.markdown("**Quellen & Fallbacks**")
+            st.checkbox("Semantic Scholar", value=st.session_state["use_semantic"], key="use_semantic")
+            st.checkbox("OpenAlex", value=st.session_state["use_openalex"], key="use_openalex")
+            st.checkbox("HTML-Abstracts", value=st.session_state["use_html"], key="use_html")
+            st.checkbox("AI-Extraktion (Fallback)", value=st.session_state["use_ai"], key="use_ai")
+            st.checkbox("ScienceDirect Spezial", value=st.session_state["use_scidir"], key="use_scidir")
 
     with st.container(border=True):
         st.markdown("### 🎯 Ziel & Fokus")
@@ -1506,32 +1507,33 @@ with mid:
         st.selectbox("Briefing-Sprache", ["Deutsch", "English"], index=0, key="brief_lang")
 
 with right:
-    with st.container(border=True):
-        st.markdown("### 🔑 Keys & Netzwerk")
-        api_key_input = st.text_input("OpenAI API-Key", type="password", value="", help="Optional. Wird für KI-Funktionen benötigt.")
-        if api_key_input:
-            os.environ["PAPERSCOUT_OPENAI_API_KEY"] = api_key_input
-            os.environ["OPENAI_API_KEY"] = api_key_input
-            st.caption("API-Key für diese Sitzung gesetzt.")
+    with st.expander("🔑 Keys & Netzwerk (optional)", expanded=False):
+        with st.container(border=True):
+            st.markdown("### 🔑 Keys & Netzwerk")
+            api_key_input = st.text_input("OpenAI API-Key", type="password", value="", help="Optional. Wird für KI-Funktionen benötigt.")
+            if api_key_input:
+                os.environ["PAPERSCOUT_OPENAI_API_KEY"] = api_key_input
+                os.environ["OPENAI_API_KEY"] = api_key_input
+                st.caption("API-Key für diese Sitzung gesetzt.")
 
-        crossref_mail = st.text_input("Crossref Mailto", value=os.getenv("CROSSREF_MAILTO", ""), help="Empfohlen für stabilere Crossref-API.")
-        if crossref_mail:
-            os.environ["CROSSREF_MAILTO"] = crossref_mail
-            st.caption("Crossref-Mailto gesetzt.")
+            crossref_mail = st.text_input("Crossref Mailto", value=os.getenv("CROSSREF_MAILTO", ""), help="Empfohlen für stabilere Crossref-API.")
+            if crossref_mail:
+                os.environ["CROSSREF_MAILTO"] = crossref_mail
+                st.caption("Crossref-Mailto gesetzt.")
 
-        proxy_url = st.text_input("Proxy (optional)", value=os.getenv("PAPERSCOUT_PROXY", ""), help="Format: http://user:pass@host:port")
-        if proxy_url:
-            st.session_state["proxy_url"] = proxy_url.strip()
-            st.success("Proxy aktiv.")
-        else:
-            st.session_state["proxy_url"] = ""
-
-        with st.expander("E-Mail Versand (Status)", expanded=False):
-            ok = all(os.getenv(k) for k in ["EMAIL_HOST","EMAIL_PORT","EMAIL_USER","EMAIL_PASSWORD","EMAIL_FROM"])
-            if ok:
-                st.success(f"SMTP konfiguriert: {os.getenv('EMAIL_FROM')}")
+            proxy_url = st.text_input("Proxy (optional)", value=os.getenv("PAPERSCOUT_PROXY", ""), help="Format: http://user:pass@host:port")
+            if proxy_url:
+                st.session_state["proxy_url"] = proxy_url.strip()
+                st.success("Proxy aktiv.")
             else:
-                st.error("SMTP nicht vollständig konfiguriert.")
+                st.session_state["proxy_url"] = ""
+
+            with st.expander("E-Mail Versand (Status)", expanded=False):
+                ok = all(os.getenv(k) for k in ["EMAIL_HOST","EMAIL_PORT","EMAIL_USER","EMAIL_PASSWORD","EMAIL_FROM"])
+                if ok:
+                    st.success(f"SMTP konfiguriert: {os.getenv('EMAIL_FROM')}")
+                else:
+                    st.error("SMTP nicht vollständig konfiguriert.")
 
     with st.container(border=True):
         st.markdown("### 💾 Gespeicherte Suchen")
