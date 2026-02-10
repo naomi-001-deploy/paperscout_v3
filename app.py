@@ -1506,7 +1506,6 @@ with mid:
         st.caption("Wenn ausgefüllt, werden Ergebnisse automatisch nach Relevanz bewertet und ein Briefing erzeugt.")
         st.selectbox("Briefing-Sprache", ["Deutsch", "English"], index=0, key="brief_lang")
 
-with right:
     with st.expander("🔑 Keys & Netzwerk (optional)", expanded=False):
         with st.container(border=True):
             st.markdown("### 🔑 Keys & Netzwerk")
