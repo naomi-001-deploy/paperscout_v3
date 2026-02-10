@@ -1145,45 +1145,45 @@ st.markdown(
     """
     <style>
     :root {
-        --ps-bg: radial-gradient(1200px 700px at 10% -10%, #ffe8c7 0%, rgba(255,232,199,0.0) 55%),
-                 radial-gradient(900px 600px at 90% 0%, #d8f0ff 0%, rgba(216,240,255,0.0) 55%),
-                 linear-gradient(180deg, #f7f3ef 0%, #f3f6f9 45%, #f7f7fb 100%);
-        --ps-ink: #101217;
-        --ps-ink-2: #3a3f4b;
-        --ps-ink-3: #6a7282;
-        --ps-accent: #ff6b35;
-        --ps-accent-2: #2d7ff9;
-        --ps-card: rgba(255,255,255,0.7);
-        --ps-card-border: rgba(16,18,23,0.08);
-        --ps-shadow: 0 12px 30px rgba(16,18,23,0.12);
+        --ps-bg: radial-gradient(1100px 600px at 8% -10%, #fff2d9 0%, rgba(255,242,217,0.0) 60%),
+                 radial-gradient(900px 600px at 92% 0%, #e3f2ff 0%, rgba(227,242,255,0.0) 60%),
+                 linear-gradient(180deg, #fdf8f3 0%, #f6f7fb 50%, #fbfbff 100%);
+        --ps-ink: #12151c;
+        --ps-ink-2: #2e3440;
+        --ps-ink-3: #5e6a7a;
+        --ps-accent: #ff7a45;
+        --ps-accent-2: #3b8bff;
+        --ps-card: rgba(255,255,255,0.92);
+        --ps-card-border: rgba(18,21,28,0.08);
+        --ps-shadow: 0 14px 30px rgba(18,21,28,0.10);
     }
     @media (prefers-color-scheme: dark) {
         :root {
-            --ps-bg: radial-gradient(1200px 700px at 10% -10%, #141821 0%, rgba(20,24,33,0.0) 55%),
-                     radial-gradient(900px 600px at 90% 0%, #0c1f2e 0%, rgba(12,31,46,0.0) 55%),
-                     linear-gradient(180deg, #0b0f16 0%, #0f1520 45%, #0b0f16 100%);
-            --ps-ink: #eef2f8;
-            --ps-ink-2: #cfd6e6;
-            --ps-ink-3: #98a3b8;
+            --ps-bg: radial-gradient(1200px 700px at 12% -10%, #1a2232 0%, rgba(26,34,50,0.0) 58%),
+                     radial-gradient(900px 600px at 88% 0%, #14283a 0%, rgba(20,40,58,0.0) 58%),
+                     linear-gradient(180deg, #0e141d 0%, #101827 50%, #0e141d 100%);
+            --ps-ink: #f4f7fb;
+            --ps-ink-2: #d5dce8;
+            --ps-ink-3: #a9b3c5;
             --ps-accent: #ff9b6a;
-            --ps-accent-2: #7ab0ff;
-            --ps-card: rgba(18,22,32,0.85);
-            --ps-card-border: rgba(255,255,255,0.08);
-            --ps-shadow: 0 14px 34px rgba(0,0,0,0.45);
+            --ps-accent-2: #7fb2ff;
+            --ps-card: rgba(24,30,44,0.92);
+            --ps-card-border: rgba(255,255,255,0.10);
+            --ps-shadow: 0 16px 36px rgba(0,0,0,0.45);
         }
     }
     html[data-theme="dark"] {
-        --ps-bg: radial-gradient(1200px 700px at 10% -10%, #1b1e2a 0%, rgba(27,30,42,0.0) 55%),
-                 radial-gradient(900px 600px at 90% 0%, #102132 0%, rgba(16,33,50,0.0) 55%),
-                 linear-gradient(180deg, #0f1117 0%, #111827 45%, #0f1117 100%);
-        --ps-ink: #f2f4f8;
-        --ps-ink-2: #d0d6e2;
-        --ps-ink-3: #9aa3b2;
-        --ps-accent: #ff8b5e;
-        --ps-accent-2: #6aa5ff;
-        --ps-card: rgba(20,24,35,0.75);
-        --ps-card-border: rgba(255,255,255,0.08);
-        --ps-shadow: 0 12px 30px rgba(0,0,0,0.35);
+        --ps-bg: radial-gradient(1200px 700px at 12% -10%, #1a2232 0%, rgba(26,34,50,0.0) 58%),
+                 radial-gradient(900px 600px at 88% 0%, #14283a 0%, rgba(20,40,58,0.0) 58%),
+                 linear-gradient(180deg, #0e141d 0%, #101827 50%, #0e141d 100%);
+        --ps-ink: #f4f7fb;
+        --ps-ink-2: #d5dce8;
+        --ps-ink-3: #a9b3c5;
+        --ps-accent: #ff9b6a;
+        --ps-accent-2: #7fb2ff;
+        --ps-card: rgba(24,30,44,0.92);
+        --ps-card-border: rgba(255,255,255,0.10);
+        --ps-shadow: 0 16px 36px rgba(0,0,0,0.45);
     }
     @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;500;600&display=swap');
     html, body, [class*="stApp"] {
@@ -1244,7 +1244,7 @@ st.markdown(
     .stTextInput input, .stTextArea textarea, .stNumberInput input, .stSelectbox select, .stMultiSelect div {
         border-radius: 12px !important;
         border: 1px solid var(--ps-card-border) !important;
-        background: rgba(255,255,255,0.85) !important;
+        background: rgba(255,255,255,0.96) !important;
         color: var(--ps-ink) !important;
     }
     @media (prefers-color-scheme: dark) {
@@ -1253,9 +1253,9 @@ st.markdown(
         .stNumberInput input,
         .stSelectbox select,
         .stMultiSelect div {
-            background: rgba(20,24,35,0.95) !important;
+            background: rgba(36,44,62,0.95) !important;
             color: var(--ps-ink) !important;
-            border-color: rgba(255,255,255,0.08) !important;
+            border-color: rgba(255,255,255,0.12) !important;
         }
     }
     html[data-theme="dark"] .stTextInput input,
