@@ -5,9 +5,11 @@
 # FIX: Synchronisierung der Auswahl.
 
 import os, re, html, json, smtplib, ssl, hashlib
+from math import ceil
 from email.mime.text import MIMEText
 from email.utils import formataddr
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import httpx
 from functools import lru_cache
@@ -77,6 +79,9 @@ def _stable_sel_key(r: dict, suffix: str) -> str:
     # kurze, saubere ID
     h = hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
     return f"sel_card_{h}_{suffix}"
+
+def _chk_key(name: str) -> str:
+    return "chk_" + re.sub(r"\W+", "_", name.lower()).strip("_")
 
 # --- SMTP aus Secrets/Env laden (robust) ---
 def setup_smtp_from_secrets_or_env():
@@ -217,6 +222,90 @@ def parse_date_any(s: Optional[str]) -> Optional[str]:
     m=re.search(r"(\d{4})",s)
     return f"{m.group(1)}-01-01" if m else None
 
+# --- Text/Trend Utilities (Relevance & Intelligence) ---
+STOPWORDS = set("""
+a an and are as at be by for from has have in is it its of on or that the to was were will with
+about above after again against all am among an any are aren't as at because been before being
+below between both but by can't cannot could couldn't did didn't do does doesn't doing don't down
+during each few for from further had hadn't has hasn't have haven't having he he'd he'll he's her
+here here's hers herself him himself his how how's i i'd i'll i'm i've if in into is isn't it it's
+its itself just me more most mustn't my myself no nor not of off on once only or other ought our
+ours ourselves out over own same shan't she she'd she'll she's should shouldn't so some such than
+that that's the their theirs them themselves then there there's these they they'd they'll they're
+they've this those through to too under until up very was wasn't we we'd we'll we're we've were
+weren't what what's when when's where where's which while who who's whom why why's with won't would
+wouldn't you you'd you'll you're you've your yours yourself yourselves
+der die das und ist im in den von mit auf als auch bei für des dem ein eine einer einem einen
+wie zu zur zum aus über unter nach vor nicht kein keine einer eines wurden wird werden
+""".split())
+
+def _tokenize(text: str) -> List[str]:
+    if not text:
+        return []
+    tokens = re.findall(r"[A-Za-zÄÖÜäöüß\-]{3,}", text.lower())
+    return [t for t in tokens if t not in STOPWORDS and not t.isdigit()]
+
+def _top_terms(texts: List[str], n: int = 8) -> List[str]:
+    freq: Dict[str, int] = {}
+    for t in texts:
+        for tok in _tokenize(t):
+            freq[tok] = freq.get(tok, 0) + 1
+    return [t for t, _ in sorted(freq.items(), key=lambda kv: kv[1], reverse=True)[:n]]
+
+def _why_relevant(query: str, text: str, max_terms: int = 4) -> str:
+    q_terms = set(_tokenize(query))
+    if not q_terms:
+        return ""
+    t_terms = _tokenize(text)
+    overlap = [t for t in t_terms if t in q_terms]
+    if not overlap:
+        return ""
+    # Keep order but unique
+    seen = set()
+    uniq = []
+    for t in overlap:
+        if t in seen:
+            continue
+        seen.add(t)
+        uniq.append(t)
+        if len(uniq) >= max_terms:
+            break
+    return ", ".join(uniq)
+
+def _safe_parse_date(s: str) -> Optional[datetime]:
+    try:
+        return datetime.strptime(s, "%Y-%m-%d")
+    except Exception:
+        return None
+
+def _trend_summary(df: pd.DataFrame, recent_days: int = 30) -> Dict[str, Any]:
+    if df.empty or "issued" not in df.columns:
+        return {}
+    dates = [_safe_parse_date(str(d)) for d in df["issued"].dropna().astype(str)]
+    dates = [d for d in dates if d]
+    if not dates:
+        return {}
+    ref_date = max(dates)
+    recent_start = ref_date - timedelta(days=recent_days)
+    prior_start = recent_start - timedelta(days=recent_days)
+    recent_mask = df["issued"].astype(str).apply(lambda s: (_safe_parse_date(s) or datetime.min) >= recent_start)
+    prior_mask = df["issued"].astype(str).apply(lambda s: prior_start <= (_safe_parse_date(s) or datetime.min) < recent_start)
+
+    def _texts(mask):
+        sub = df[mask]
+        return (sub.get("abstract", "").fillna("") + " " + sub.get("title", "").fillna("")).tolist()
+
+    recent_terms = _top_terms(_texts(recent_mask), n=8)
+    prior_terms = _top_terms(_texts(prior_mask), n=8)
+    emerging = [t for t in recent_terms if t not in prior_terms][:6]
+    return {
+        "recent_start": recent_start.date().isoformat(),
+        "recent_end": ref_date.date().isoformat(),
+        "recent_terms": recent_terms,
+        "prior_terms": prior_terms,
+        "emerging": emerging,
+    }
+
 # =========================
 # API-Schnittstellen
 # =========================
@@ -269,7 +358,7 @@ ALT_ISSN: Dict[str, List[str]] = {
     "Administrative Science Quarterly": ["1930-3815"],
 }
 
-def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: int) -> List[Dict[str, Any]]:
+def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: int, query: Optional[str] = None) -> List[Dict[str, Any]]:
     mailto = os.getenv("CROSSREF_MAILTO") or "you@example.com"
     base_filters = [
         ("from-pub-date", "until-pub-date"),
@@ -277,26 +366,28 @@ def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: in
         ("from-print-pub-date", "until-print-pub-date"),
     ]
 
+    q = f"&query.title={quote_plus(query)}" if query else ""
+
     def _mk_urls(_issn: str, with_dates: bool) -> List[str]:
         if with_dates:
             url_list: List[str] = []
             for f_from, f_until in base_filters:
                 filt = f"{f_from}:{since},{f_until}:{until},type:journal-article"
                 url_list.extend([
-                    f"{CR_BASE}/journals/{_issn}/works?filter={filt}&sort=published&order=desc&rows={rows}&mailto={mailto}",
-                    f"{CR_BASE}/works?filter=issn:{_issn},{filt}&sort=published&order=desc&rows={rows}&mailto={mailto}",
+                    f"{CR_BASE}/journals/{_issn}/works?filter={filt}&sort=published&order=desc&rows={rows}&mailto={mailto}{q}",
+                    f"{CR_BASE}/works?filter=issn:{_issn},{filt}&sort=published&order=desc&rows={rows}&mailto={mailto}{q}",
                 ])
             for f_from, f_until in base_filters:
                 filt = f"{f_from}:{since},{f_until}:{until},type:journal-article"
                 url_list.append(
-                    f"{CR_BASE}/works?query.container-title={quote_plus(journal)}&filter={filt}&sort=published&order=desc&rows={rows}&mailto={mailto}"
+                    f"{CR_BASE}/works?query.container-title={quote_plus(journal)}&filter={filt}&sort=published&order=desc&rows={rows}&mailto={mailto}{q}"
                 )
             return url_list
         else:
             return [
-                f"{CR_BASE}/journals/{_issn}/works?filter=type:journal-article&sort=published&order=desc&rows={rows}&mailto={mailto}",
-                f"{CR_BASE}/works?filter=issn:{_issn},type:journal-article&sort=published&order=desc&rows={rows}&mailto={mailto}",
-                f"{CR_BASE}/works?query.container-title={quote_plus(journal)}&filter=type:journal-article&sort=published&order=desc&rows={rows}&mailto={mailto}",
+                f"{CR_BASE}/journals/{_issn}/works?filter=type:journal-article&sort=published&order=desc&rows={rows}&mailto={mailto}{q}",
+                f"{CR_BASE}/works?filter=issn:{_issn},type:journal-article&sort=published&order=desc&rows={rows}&mailto={mailto}{q}",
+                f"{CR_BASE}/works?query.container-title={quote_plus(journal)}&filter=type:journal-article&sort=published&order=desc&rows={rows}&mailto={mailto}{q}",
             ]
 
     issn_candidates = [issn] + ALT_ISSN.get(journal, [])
@@ -483,12 +574,29 @@ def fetch_sciencedirect_abstract(doi_or_url: str) -> Optional[str]:
 # =========================
 # Hauptpipeline
 # =========================
-def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) -> List[Dict[str, Any]]:
+def collect_all(
+    journal: str,
+    since: str,
+    until: str,
+    rows: int,
+    ai_model: str,
+    topic_query: Optional[str] = None,
+    options: Optional[Dict[str, bool]] = None,
+) -> List[Dict[str, Any]]:
+    opts = {
+        "use_semantic": True,
+        "use_openalex": True,
+        "use_html": True,
+        "use_ai": True,
+        "use_scidir": True,
+    }
+    if options:
+        opts.update(options)
     issn = JOURNAL_ISSN.get(journal)
     if not issn:
         return []
 
-    base = fetch_crossref_any(journal, issn, since, until, rows)
+    base = fetch_crossref_any(journal, issn, since, until, rows, query=topic_query)
     out: List[Dict[str, Any]] = []
 
     if not base:
@@ -496,22 +604,28 @@ def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) 
 
     for rec in base:
         if rec.get("abstract"):
+            rec["abstract_source"] = "crossref"
             out.append(rec)
             continue
 
         doi = rec.get("doi", "")
 
         for fn in (fetch_semantic, fetch_openalex):
+            if fn == fetch_semantic and not opts.get("use_semantic", True):
+                continue
+            if fn == fetch_openalex and not opts.get("use_openalex", True):
+                continue
             if not doi:
                 break
             data = fn(doi)
             if data and data.get("abstract"):
+                rec["abstract_source"] = "semantic" if fn == fetch_semantic else "openalex"
                 for k in ["title", "authors", "journal", "issued", "abstract", "url"]:
                     if not rec.get(k):
                         rec[k] = data.get(k)
                 break
 
-        if not rec.get("abstract"):
+        if not rec.get("abstract") and opts.get("use_scidir", True):
             is_sd_url = "sciencedirect.com" in (rec.get("url","") or "")
             is_sd_journal = (issn == "1048-9843") 
             
@@ -519,15 +633,17 @@ def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) 
                 abs_text = fetch_sciencedirect_abstract(rec.get("url") or rec.get("doi",""))
                 if abs_text:
                     rec["abstract"] = abs_text
+                    rec["abstract_source"] = "sciencedirect"
 
-        if not rec.get("abstract") and rec.get("url"):
+        if not rec.get("abstract") and rec.get("url") and opts.get("use_html", True):
             html_text = fetch_html(rec["url"])
             if html_text:
                 abs_simple = extract_abstract_from_html_simple(html_text)
                 if abs_simple:
                     rec["abstract"] = abs_simple
+                    rec["abstract_source"] = "html"
 
-        if not rec.get("abstract") and rec.get("url"):
+        if not rec.get("abstract") and rec.get("url") and opts.get("use_ai", True):
             html_text = fetch_html(rec["url"])
             if html_text:
                 ai = ai_extract_metadata_from_html(html_text, ai_model)
@@ -535,6 +651,11 @@ def collect_all(journal: str, since: str, until: str, rows: int, ai_model: str) 
                     for k in ["title", "authors", "journal", "issued", "abstract", "doi", "url"]:
                         if not rec.get(k) and ai.get(k):
                             rec[k] = ai.get(k)
+                    if ai.get("abstract"):
+                        rec["abstract_source"] = "ai"
+
+        if not rec.get("abstract"):
+            rec["abstract_source"] = rec.get("abstract_source") or "none"
 
         out.append(rec)
 
@@ -658,6 +779,44 @@ def _ai_name_cluster(examples: List[str], model: str = "gpt-4o-mini") -> Optiona
         label = (resp.choices[0].message.content or "").strip()
         label = re.sub(r'^[\"“”]+|[\"“”]+$', '', label).strip()
         return label or None
+    except Exception:
+        return None
+
+def ai_generate_digest(records: List[Dict[str, Any]], model: str = "gpt-4o-mini", lang: str = "Deutsch") -> Optional[str]:
+    key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not key or not records:
+        return None
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=key)
+        items = []
+        for r in records[:12]:
+            title = _clean_text(str(r.get("title","")))
+            journal = _clean_text(str(r.get("journal","")))
+            issued = _clean_text(str(r.get("issued","")))
+            abstract = _clean_text(str(r.get("abstract","")))[:900]
+            items.append(f"TITLE: {title}\nJOURNAL: {journal}\nDATE: {issued}\nABSTRACT: {abstract}")
+        payload = "\n\n---\n\n".join(items)
+        system_msg = (
+            "You are a research analyst who produces concise, high-signal digests of recent papers."
+        )
+        user_msg = (
+            f"Language: {lang}. Create a digest with these sections:\n"
+            "1) Executive summary (4-6 bullets)\n"
+            "2) Emerging themes (3 bullets)\n"
+            "3) Open questions (3 bullets)\n"
+            "4) Recommended papers (5 bullets, include title + one-line why)\n\n"
+            f"PAPERS:\n{payload}"
+        )
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.3,
+        )
+        return (resp.choices[0].message.content or "").strip()
     except Exception:
         return None
 
@@ -790,6 +949,80 @@ def compute_relevance_scores(
 
     return pd.Series(scores, name="relevance_score") if scores else None
 
+def compute_relevance_scores_multi(
+    df: pd.DataFrame,
+    queries: List[Dict[str, Any]],
+    min_text_len: int = 30,
+    model: str = "text-embedding-3-small",
+) -> Optional[pd.Series]:
+    clean = [(q.get("text","").strip(), float(q.get("weight", 1.0))) for q in queries if q.get("text","").strip()]
+    if not clean:
+        return None
+    # Weighted query embedding
+    emb_sum = None
+    weight_sum = 0.0
+    for text, w in clean:
+        emb = _get_embedding(text, model=model)
+        if not emb:
+            continue
+        if emb_sum is None:
+            emb_sum = [0.0] * len(emb)
+        for i, v in enumerate(emb):
+            emb_sum[i] += v * w
+        weight_sum += w
+    if not emb_sum or weight_sum == 0:
+        return None
+    q_emb = [v / weight_sum for v in emb_sum]
+
+    scores: Dict[int, float] = {}
+    for idx, row in df.iterrows():
+        abstract = str(row.get("abstract", "") or "").strip()
+        title = str(row.get("title", "") or "").strip()
+        text = abstract if len(abstract) >= min_text_len else title
+        if len(text) < min_text_len:
+            scores[idx] = 0.0
+            continue
+        emb = _get_embedding(text, model=model)
+        if not emb:
+            scores[idx] = 0.0
+            continue
+        sim = _cosine_sim(q_emb, emb)
+        sim = max(sim, 0.0)
+        scores[idx] = round(sim * 100, 1)
+    return pd.Series(scores, name="relevance_score") if scores else None
+
+def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "issued" not in df.columns:
+        return df
+    dates = []
+    for d in df["issued"].astype(str).tolist():
+        dt = _safe_parse_date(d)
+        dates.append(dt)
+    valid_dates = [d for d in dates if d]
+    if not valid_dates:
+        return df
+    ref_date = max(valid_dates)
+    days_ago = []
+    for d in dates:
+        if not d:
+            days_ago.append(None)
+        else:
+            days_ago.append((ref_date - d).days)
+    max_days = max([d for d in days_ago if d is not None] or [1])
+    recency_scores = []
+    for d in days_ago:
+        if d is None:
+            recency_scores.append(0.0)
+        else:
+            recency_scores.append(round((1 - (d / max_days)) * 100, 1))
+    df["days_ago"] = days_ago
+    if "relevance_score" in df.columns:
+        rel = df["relevance_score"].fillna(0.0)
+        df["signal_score"] = (rel * 0.6 + pd.Series(recency_scores) * 0.4).round(1)
+    else:
+        df["signal_score"] = pd.Series(recency_scores).round(1)
+    return df
+
 
 # =========================
 # E-Mail Versand (SMTP) - JETZT MIT HTML-DESIGN
@@ -817,10 +1050,9 @@ def send_doi_email(
 
     display_name = (sender_display or "").strip() or default_name
 
-    # --- HTML Tabellen-Inhalt generieren ---
+    # --- HTML Tabellen-Inhalt generieren (modernes Design) ---
     table_rows = ""
     for i, rec in enumerate(records):
-        bg_color = "#ffffff" if i % 2 == 0 else "#f9f9f9" # Zebra-Streifen
         title = html.escape(str(rec.get("title", "(ohne Titel)")))
         authors = html.escape(str(rec.get("authors", "Autor:innen unbekannt")))
         journal = html.escape(str(rec.get("journal", "Journal unbekannt")))
@@ -828,13 +1060,17 @@ def send_doi_email(
         doi_url = str(rec.get("doi", ""))
         
         table_rows += f"""
-        <tr style="background-color: {bg_color};">
-            <td style="padding: 12px; border-bottom: 1px solid #eeeeee;">
-                <div style="font-weight: bold; color: #1f77b4; font-size: 16px; margin-bottom: 4px;">{title}</div>
-                <div style="font-size: 14px; color: #333333; margin-bottom: 4px;">{authors}</div>
-                <div style="font-size: 12px; color: #666666;">
-                    <i>{journal}</i> {f'({issued})' if issued else ''} | 
-                    <a href="{doi_url}" style="color: #ff4b4b; text-decoration: none; font-weight: bold;">DOI Link</a>
+        <tr>
+            <td style="padding: 10px 0;">
+                <div style="border:1px solid #e7e7ec; border-radius:14px; padding:16px; background:#ffffff;">
+                    <div style="font-weight:700; color:#101217; font-size:16px; margin-bottom:6px;">{title}</div>
+                    <div style="font-size:13px; color:#3a3f4b; margin-bottom:8px;">{authors}</div>
+                    <div style="font-size:12px; color:#6a7282; margin-bottom:12px;">
+                        <span style="font-weight:600;">{journal}</span> {f'· {issued}' if issued else ''}
+                    </div>
+                    <a href="{doi_url}" style="display:inline-block; padding:8px 12px; border-radius:999px; background:#ff6b35; color:#ffffff; text-decoration:none; font-size:12px; font-weight:700;">
+                        DOI öffnen
+                    </a>
                 </div>
             </td>
         </tr>
@@ -843,22 +1079,27 @@ def send_doi_email(
     # --- Das HTML-Template ---
     html_body = f"""
     <html>
-    <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333;">
-        <div style="max-width: 800px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
-            <div style="background-color: #ff4b4b; padding: 20px; text-align: center; color: white;">
-                <h1 style="margin: 0; font-size: 24px;">🕵🏻 paperscout Report</h1>
-                <p style="margin: 5px 0 0 0; opacity: 0.9;">Ausgewählt von: {display_name}</p>
-            </div>
-            <div style="padding: 20px;">
-                <p>Hallo,</p>
-                <p>hier ist deine Übersicht der <strong>{len(records)} ausgewählten Artikel</strong> aus dem Paperscout:</p>
-                
-                <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
-                    {table_rows}
-                </table>
-                
-                <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eeeeee; font-size: 12px; color: #999; text-align: center;">
-                    Gesendet via <strong>paperscout UI</strong> am {datetime.now().strftime('%d.%m.%Y um %H:%M')} Uhr.
+    <body style="margin:0; padding:0; background:#f7f3ef; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color:#101217;">
+        <div style="max-width: 720px; margin: 24px auto; padding: 0 16px;">
+            <div style="border-radius: 18px; overflow: hidden; border:1px solid #e7e7ec; background:#ffffff;">
+                <div style="padding: 20px; background: linear-gradient(135deg, #ff6b35, #ff9f2e); color: #ffffff;">
+                    <div style="font-size: 20px; font-weight: 800; letter-spacing:-0.02em;">paperscout</div>
+                    <div style="font-size: 12px; opacity:0.9;">Research Digest · {len(records)} Artikel</div>
+                </div>
+                <div style="padding: 20px;">
+                    <p style="margin:0 0 10px 0;">Hallo,</p>
+                    <p style="margin:0 0 14px 0; color:#3a3f4b;">
+                        hier ist deine kuratierte Übersicht der ausgewählten Artikel.
+                    </p>
+                    <div style="font-size:12px; color:#6a7282; margin-bottom:12px;">
+                        Ausgewählt von: <strong>{display_name}</strong>
+                    </div>
+                    <table style="width:100%; border-collapse: collapse;">
+                        {table_rows}
+                    </table>
+                    <div style="margin-top: 18px; padding-top: 14px; border-top: 1px solid #eeeeee; font-size: 11px; color: #8b92a1;">
+                        Gesendet via paperscout · {datetime.now().strftime('%d.%m.%Y %H:%M')}
+                    </div>
                 </div>
             </div>
         </div>
@@ -900,11 +1141,106 @@ def send_doi_email(
 # NEUE UI (v3) - JETZT MIT DARK MODE
 # =========================
 # =========================
-st.title("🕵🏻 paperscout – Journal Service")
+st.markdown(
+    """
+    <style>
+    :root {
+        --ps-bg: radial-gradient(1200px 700px at 10% -10%, #ffe8c7 0%, rgba(255,232,199,0.0) 55%),
+                 radial-gradient(900px 600px at 90% 0%, #d8f0ff 0%, rgba(216,240,255,0.0) 55%),
+                 linear-gradient(180deg, #f7f3ef 0%, #f3f6f9 45%, #f7f7fb 100%);
+        --ps-ink: #101217;
+        --ps-ink-2: #3a3f4b;
+        --ps-ink-3: #6a7282;
+        --ps-accent: #ff6b35;
+        --ps-accent-2: #2d7ff9;
+        --ps-card: rgba(255,255,255,0.7);
+        --ps-card-border: rgba(16,18,23,0.08);
+        --ps-shadow: 0 12px 30px rgba(16,18,23,0.12);
+    }
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;500;600&display=swap');
+    html, body, [class*="stApp"] {
+        background: var(--ps-bg);
+        color: var(--ps-ink);
+        font-family: 'Manrope', sans-serif;
+    }
+    h1, h2, h3, h4, h5 {
+        font-family: 'Space Grotesk', sans-serif;
+        letter-spacing: -0.02em;
+    }
+    .ps-hero {
+        border-radius: 18px;
+        padding: 1.4rem 1.6rem;
+        background: linear-gradient(135deg, rgba(255,255,255,0.85), rgba(255,255,255,0.6));
+        border: 1px solid var(--ps-card-border);
+        box-shadow: var(--ps-shadow);
+        margin-bottom: 1rem;
+    }
+    .ps-hero-title {
+        font-size: 2rem;
+        font-weight: 700;
+        margin: 0 0 0.2rem 0;
+    }
+    .ps-hero-sub {
+        color: var(--ps-ink-2);
+        font-size: 1rem;
+        margin: 0;
+    }
+    .stTabs [data-baseweb="tab"] {
+        font-family: 'Space Grotesk', sans-serif;
+        font-weight: 600;
+    }
+    .stButton > button {
+        border-radius: 12px;
+        border: 1px solid var(--ps-card-border);
+        background: linear-gradient(180deg, #ffffff, #f3f6fb);
+        box-shadow: 0 6px 14px rgba(16,18,23,0.08);
+        transition: transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    .stButton > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 20px rgba(16,18,23,0.12);
+    }
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, var(--ps-accent), #ff9f2e);
+        color: #fff;
+        border: none;
+    }
+    .stTextInput input, .stTextArea textarea, .stNumberInput input, .stSelectbox select, .stMultiSelect div {
+        border-radius: 12px !important;
+        border: 1px solid var(--ps-card-border) !important;
+        background: rgba(255,255,255,0.85) !important;
+    }
+    .stExpander {
+        border-radius: 14px;
+        border: 1px solid var(--ps-card-border);
+        background: rgba(255,255,255,0.7);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    """
+    <div class="ps-hero">
+        <div class="ps-hero-title">🕵🏻‍♀️ Dein paperscout</div>
+        <p class="ps-hero-sub">Frische Forschungsartikel, kuratiert in wenigen Sekunden.</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 # Init Session State für Auswahl
 if "selected_dois" not in st.session_state:
     st.session_state["selected_dois"] = set()
+if "saved_searches" not in st.session_state:
+    st.session_state["saved_searches"] = []
+if "collections" not in st.session_state:
+    st.session_state["collections"] = {}
+if "last_run_df" not in st.session_state:
+    st.session_state["last_run_df"] = None
+if "embedding_cache" not in st.session_state:
+    st.session_state["embedding_cache"] = {}
 
 # --- KORREKTUR: CSS-Block (v3) für Dark Mode ---
 # Verwendet jetzt Streamlit CSS-Variablen für dynamische Farben
@@ -915,181 +1251,330 @@ CARD_STYLE_V3 = """
     Verwendet Streamlit CSS-Variablen, um sich an Light/Dark-Mode anzupassen.
     */
     .result-card {
-        /* Nimmt die "Hintergrundfarbe für Container" (hellgrau/dunkelgrau) */
-        background-color: var(--secondary-background-color); 
-        border: 1px solid var(--secondary-background-color); /* Rand in gleicher Farbe */
-        border-left: 6px solid var(--primary-color); /* Akzentfarbe (z.B. blau) */
-        border-radius: 8px;
-        padding: 1.1rem;
+        background: var(--ps-card);
+        border: 1px solid var(--ps-card-border);
+        border-left: 8px solid var(--ps-accent-2);
+        border-radius: 16px;
+        padding: 1.2rem;
         margin-bottom: 1rem;
-        /* Subtiler Schatten, der auf beiden Modi funktioniert */
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05); 
-        transition: all 0.2s ease-in-out;
+        box-shadow: var(--ps-shadow);
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+        backdrop-filter: blur(6px);
     }
     .result-card:hover {
-        /* Heller/dunkler als der Hintergrund, je nach Modus */
-        background-color: var(--background-color); 
-        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-        transform: translateY(-2px);
+        transform: translateY(-3px);
+        box-shadow: 0 18px 35px rgba(16,18,23,0.16);
     }
     .result-card h3 {
-        color: var(--text-color); /* Passt sich an (schwarz/weiß) */
+        color: var(--ps-ink);
         margin-top: 0;
         margin-bottom: 0.25rem;
+        font-weight: 700;
     }
     .result-card .meta {
-        color: var(--secondary-text-color); /* Passt sich an (grau) */
+        color: var(--ps-ink-3);
         font-size: 0.9rem;
-        margin-bottom: 0.75rem;
+        margin-bottom: 0.6rem;
     }
     .result-card .authors {
-        color: var(--text-color); /* Passt sich an (schwarz/weiß) */
+        color: var(--ps-ink-2);
         font-size: 0.95rem;
-        font-weight: 500;
+        font-weight: 600;
     }
     .result-card details {
         margin-top: 1rem;
     }
     .result-card details summary {
         cursor: pointer;
-        font-weight: bold;
-        color: var(--primary-color); /* Nutzt die Akzentfarbe des Themes */
+        font-weight: 700;
+        color: var(--ps-accent);
         font-size: 0.95rem;
-        list-style-type: '➕ ';
+        list-style-type: '✦ ';
     }
     .result-card details[open] summary {
-        list-style-type: '➖ ';
+        list-style-type: '▾ ';
     }
     .result-card details > div {
-        /* Nimmt die Haupt-Hintergrundfarbe (weiß/sehr dunkelgrau) */
-        background-color: var(--background-color); 
-        border-radius: 5px;
+        background: rgba(255,255,255,0.8);
+        border-radius: 10px;
         padding: 0.75rem 1rem;
-        margin-top: 0.5rem;
-        /* Rand ist jetzt die "normale" Randfarbe */
-        border: 1px solid var(--border-color, var(--gray-300)); 
+        margin-top: 0.6rem;
+        border: 1px solid var(--ps-card-border);
     }
-    
-    /* Expliziter Fallback für Rand im Dark Mode (falls --border-color nicht gesetzt ist) */
-    html.dark .result-card details > div {
-        border: 1px solid var(--border-color, var(--gray-800));
-    }
-    
     .result-card details .abstract {
-        color: var(--text-color); /* Passt sich an */
+        color: var(--ps-ink-2);
         white-space: pre-wrap;
-        font-size: 0.9rem;
+        font-size: 0.92rem;
         line-height: 1.6;
     }
     .result-card details a {
-        color: var(--primary-color); /* Links nutzen auch Akzentfarbe */
+        color: var(--ps-accent-2);
         text-decoration: none;
+        font-weight: 600;
     }
     .result-card details a:hover {
         text-decoration: underline;
     }
 
-    /* NEU: Styles für Cluster-Karten */
     .cluster-card {
-        background-color: var(--secondary-background-color);
-        padding: 10px;
-        border-radius: 8px;
+        background: rgba(255,255,255,0.7);
+        padding: 12px;
+        border-radius: 12px;
         margin-bottom: 10px;
-        border: 1px solid var(--border-color, var(--gray-300));
+        border: 1px solid var(--ps-card-border);
+        box-shadow: 0 6px 12px rgba(16,18,23,0.08);
+    }
+    .ps-chip {
+        display: inline-block;
+        padding: 0.12rem 0.5rem;
+        border-radius: 999px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        background: var(--ps-accent-2);
+        color: #fff;
+        margin-left: 0.35rem;
+    }
+    .ps-chip.hot {
+        background: var(--ps-accent);
+    }
+    .ps-callout {
+        display: inline-block;
+        padding: 0.18rem 0.6rem;
+        border-radius: 999px;
+        background: linear-gradient(135deg, var(--ps-accent), #ff9f2e);
+        color: #fff;
+        font-size: 0.72rem;
+        font-weight: 700;
+        margin-bottom: 0.4rem;
     }
 </style>
 """
 st.markdown(CARD_STYLE_V3, unsafe_allow_html=True)
 
 
-# --- Setup-Tabs ---
-tab1, tab2 = st.tabs(["🔍 Schritt 1: Auswahl", "⚙️ Schritt 2: Einstellungen"])
+# --- Command Center (ohne Tabs) ---
 journals = sorted(JOURNAL_ISSN.keys())
 today = date.today()
 
-with tab1:
-    st.markdown("#### Journals auswählen")
-    
-    def _chk_key(name: str) -> str:
-        return "chk_" + re.sub(r"\W+", "_", name.lower()).strip("_")
-
-    sel_all_col, desel_all_col, _ = st.columns([1, 1, 4])
-    with sel_all_col:
-        select_all_clicked = st.button("Alle **Journals** auswählen", use_container_width=True)
-    with desel_all_col:
-        deselect_all_clicked = st.button("Alle **Journals** abwählen", use_container_width=True)
-
-    if select_all_clicked:
+# --- Apply saved search before widgets are created ---
+if "preset_to_apply" in st.session_state:
+    preset_name = st.session_state.pop("preset_to_apply")
+    preset = next((p for p in st.session_state.get("saved_searches", []) if p["name"] == preset_name), None)
+    if preset:
         for j in journals:
-            st.session_state[_chk_key(j)] = True
-    if deselect_all_clicked:
-        for j in journals:
-            st.session_state[_chk_key(j)] = False
+            st.session_state[_chk_key(j)] = j in preset.get("journals", [])
+        st.session_state["since_input"] = datetime.strptime(preset["since"], "%Y-%m-%d").date()
+        st.session_state["until_input"] = datetime.strptime(preset["until"], "%Y-%m-%d").date()
+        st.session_state["last7_input"] = preset.get("last7", False)
+        st.session_state["last30_input"] = preset.get("last30", False)
+        st.session_state["last1_input"] = preset.get("last1", False)
+        st.session_state["rows_input"] = preset.get("rows", 100)
+        st.session_state["ai_model_input"] = preset.get("ai_model", "gpt-4.1")
+        st.session_state["topic_query_input"] = preset.get("topic_query", "")
+        st.session_state["relevance_query_input"] = preset.get("relevance_query", "")
+        st.session_state["brief_lang"] = preset.get("brief_lang", "Deutsch")
 
-    chosen: List[str] = []
-    cols = st.columns(3)
-    for idx, j in enumerate(journals):
-        k = _chk_key(j)
-        current_val = st.session_state.get(k, False)
-        with cols[idx % 3]:
-            if st.checkbox(j, value=current_val, key=k):
-                chosen.append(j)
+st.markdown("## Command Center")
 
-    st.markdown(f"**{len(chosen)}** Journal(s) ausgewählt.")
-    st.divider()
-    
-    st.markdown("#### Zeitraum definieren")
-    date_col1, date_col2, date_col3 = st.columns(3)
-    with date_col1:
-        since = st.date_input("Seit (inkl.)", value=date(today.year, 1, 1))
-    with date_col2:
-        until = st.date_input("Bis (inkl.)", value=today)
-    with date_col3:
-        st.markdown("<br>", unsafe_allow_html=True) # Kleiner Layout-Hack für die Höhe
-        last30 = st.checkbox("Nur letzte 30 Tage", value=False)
+with st.expander("🧭 Scope & Journals", expanded=True):
+    with st.container(border=True):
+        st.markdown("### 🧭 Scope & Journals")
+        journal_filter = st.text_input("Journal suchen (Filter)", value="", key="journal_filter_input")
+
+        sel_all_col, desel_all_col = st.columns([1, 1])
+        with sel_all_col:
+            select_all_clicked = st.button("Alle auswählen", use_container_width=True)
+        with desel_all_col:
+            deselect_all_clicked = st.button("Alle abwählen", use_container_width=True)
+
+        if select_all_clicked:
+            for j in journals:
+                st.session_state[_chk_key(j)] = True
+        if deselect_all_clicked:
+            for j in journals:
+                st.session_state[_chk_key(j)] = False
+
+        filtered = [j for j in journals if journal_filter.lower().strip() in j.lower()] if journal_filter.strip() else journals
+        cols = st.columns(2)
+        for idx, j in enumerate(filtered):
+            k = _chk_key(j)
+            current_val = st.session_state.get(k, False)
+            with cols[idx % 2]:
+                if st.checkbox(j, value=current_val, key=k):
+                    pass
+
+        chosen = [j for j in journals if st.session_state.get(_chk_key(j), False)]
+        st.markdown(f"**{len(chosen)}** Journal(s) ausgewählt.")
+        st.session_state["chosen_journals"] = chosen
+
+with st.expander("🗓️ Zeitfenster", expanded=True):
+    with st.container(border=True):
+        st.markdown("### 🗓️ Zeitfenster")
+        date_col1, date_col2, date_col3 = st.columns(3)
+        with date_col1:
+            if "since_input" not in st.session_state:
+                st.session_state["since_input"] = date(today.year, 1, 1)
+            since = st.date_input("Seit (inkl.)", value=st.session_state["since_input"], key="since_input")
+        with date_col2:
+            if "until_input" not in st.session_state:
+                st.session_state["until_input"] = today
+            until = st.date_input("Bis (inkl.)", value=st.session_state["until_input"], key="until_input")
+        with date_col3:
+            st.markdown("<br>", unsafe_allow_html=True)
+            last30 = st.checkbox("Letzte 30 Tage", value=False, key="last30_input")
+            last7 = st.checkbox("Letzte 7 Tage", value=False, key="last7_input")
+            last1 = st.checkbox("Letzter Tag", value=False, key="last1_input")
         if last30:
             st.caption(f"Aktiv: {(today - timedelta(days=30)).isoformat()} bis {today.isoformat()}")
-        last7 = st.checkbox("Nur letzte 7 Tage", value=False)
         if last7:
             st.caption(f"Aktiv: {(today - timedelta(days=7)).isoformat()} bis {today.isoformat()}")
-        last1 = st.checkbox("Nur letzter Tag", value=False)
         if last1:
             st.caption(f"Aktiv: {(today - timedelta(days=1)).isoformat()} bis {today.isoformat()}")
-            
 
-with tab2:
-    st.markdown("#### Technische Einstellungen")
-    rows = st.number_input("Max. Treffer pro Journal", min_value=5, max_value=200, step=5, value=100)
-    ai_model = st.text_input("OpenAI Modell (für Abstract-Fallback)", value="gpt-4o-mini")
-    
-    st.markdown("#### API-Keys & E-Mails")
-    api_key_input = st.text_input("🔑 OpenAI API-Key", type="password", value="", help="Optional. Wird für Artikel ohne Abstract benötigt.")
-    
-    # Manuelle Eingabe auch wieder wie im alten Code unterstützen (Env Variable setzen)
-    if api_key_input:
-        os.environ["PAPERSCOUT_OPENAI_API_KEY"] = api_key_input
-        os.environ["OPENAI_API_KEY"] = api_key_input # Für Libraries
-        st.caption("API-Key für diese Sitzung gesetzt.")
-        
-    crossref_mail = st.text_input("📧 Crossref Mailto (empfohlen)", value=os.getenv("CROSSREF_MAILTO", ""), help="Eine E-Mail-Adresse verbessert die Zuverlässigkeit der Crossref-API.")
-    if crossref_mail:
-        os.environ["CROSSREF_MAILTO"] = crossref_mail
-        st.caption("Crossref-Mailto für diese Sitzung gesetzt.")
+with st.expander("🎯 Ziel & Fokus", expanded=False):
+    with st.container(border=True):
+        st.markdown("<div class='ps-callout'>Empfohlen</div>", unsafe_allow_html=True)
+        st.markdown("### 🎯 Ziel & Fokus")
+        st.caption("Optionaler Fokustext für Relevanz-Rating & Briefing.")
+        st.text_area(
+            "Forschungsinteresse",
+            value=st.session_state.get("relevance_query_input", ""),
+            height=120,
+            key="relevance_query_input",
+        )
+        st.caption("Wenn ausgefüllt, werden Ergebnisse automatisch nach Relevanz bewertet und ein Briefing erzeugt.")
+        st.selectbox("Briefing-Sprache", ["Deutsch", "English"], index=0, key="brief_lang")
 
-    st.markdown("#### Netzwerk & Versand")
-    proxy_url = st.text_input("🌐 Proxy (optional)", value=os.getenv("PAPERSCOUT_PROXY", ""), help="Format: http://user:pass@host:port")
-    if proxy_url:
-        st.session_state["proxy_url"] = proxy_url.strip()
-        st.success("Proxy für diese Sitzung aktiv.")
-    else:
-        st.session_state["proxy_url"] = ""
+with st.expander("💾 Gespeicherte Suchen", expanded=False):
+    with st.container(border=True):
+        st.markdown("### 💾 Gespeicherte Suchen")
+        ss_cols = st.columns([2, 1, 1])
+        with ss_cols[0]:
+            save_name = st.text_input("Name", value="")
+        with ss_cols[1]:
+            if st.button("Speichern", use_container_width=True):
+                if not save_name.strip():
+                    st.warning("Bitte einen Namen angeben.")
+                else:
+                    preset = {
+                        "name": save_name.strip(),
+                        "journals": st.session_state.get("chosen_journals", []),
+                        "since": str(st.session_state.get("since_input")),
+                        "until": str(st.session_state.get("until_input")),
+                        "last7": bool(st.session_state.get("last7_input")),
+                        "last30": bool(st.session_state.get("last30_input")),
+                        "last1": bool(st.session_state.get("last1_input")),
+                        "rows": int(st.session_state.get("rows_input", 100)),
+                        "ai_model": st.session_state.get("ai_model_input", "gpt-4.1"),
+                        "topic_query": st.session_state.get("topic_query_input", ""),
+                        "relevance_query": st.session_state.get("relevance_query_input", ""),
+                        "brief_lang": st.session_state.get("brief_lang", "Deutsch"),
+                    }
+                    st.session_state["saved_searches"] = [p for p in st.session_state["saved_searches"] if p["name"] != preset["name"]]
+                    st.session_state["saved_searches"].append(preset)
+                    st.success("Gespeichert.")
+        with ss_cols[2]:
+            if st.session_state["saved_searches"]:
+                if st.button("Löschen", use_container_width=True):
+                    st.session_state["saved_searches"] = []
+                    st.success("Gelöscht.")
 
-    with st.expander("✉️ E-Mail Versand (Status)", expanded=False):
-        ok = all(os.getenv(k) for k in ["EMAIL_HOST","EMAIL_PORT","EMAIL_USER","EMAIL_PASSWORD","EMAIL_FROM"])
-        if ok:
-            st.success(f"SMTP konfiguriert für: {os.getenv('EMAIL_FROM')}")
+        if st.session_state["saved_searches"]:
+            names = [p["name"] for p in st.session_state["saved_searches"]]
+            pick = st.selectbox("Laden", options=names, index=0)
+            if st.button("Anwenden", use_container_width=True):
+                st.session_state["preset_to_apply"] = pick
+                st.rerun()
+
+with st.expander("🚀 Discovery Mode (optional)", expanded=False):
+    with st.container(border=True):
+        st.markdown("### 🚀 Discovery Mode")
+        mode = st.radio(
+            "Modus",
+            ["Scout (schnell)", "Focus (balanciert)", "Deep (maximale Abdeckung)"],
+            index=1,
+            key="discovery_mode",
+        )
+
+        if "rows_input" not in st.session_state:
+            st.session_state["rows_input"] = 100
+        if "ai_model_input" not in st.session_state:
+            st.session_state["ai_model_input"] = "gpt-4.1"
+
+        if "use_semantic" not in st.session_state:
+            st.session_state["use_semantic"] = True
+        if "use_openalex" not in st.session_state:
+            st.session_state["use_openalex"] = True
+        if "use_html" not in st.session_state:
+            st.session_state["use_html"] = True
+        if "use_ai" not in st.session_state:
+            st.session_state["use_ai"] = False
+        if "use_scidir" not in st.session_state:
+            st.session_state["use_scidir"] = True
+
+        if st.button("Modus übernehmen"):
+            if mode.startswith("Scout"):
+                st.session_state["rows_input"] = 60
+                st.session_state["use_semantic"] = True
+                st.session_state["use_openalex"] = False
+                st.session_state["use_html"] = False
+                st.session_state["use_ai"] = False
+                st.session_state["use_scidir"] = False
+            elif mode.startswith("Focus"):
+                st.session_state["rows_input"] = 100
+                st.session_state["use_semantic"] = True
+                st.session_state["use_openalex"] = True
+                st.session_state["use_html"] = True
+                st.session_state["use_ai"] = False
+                st.session_state["use_scidir"] = True
+            else:
+                st.session_state["rows_input"] = 150
+                st.session_state["use_semantic"] = True
+                st.session_state["use_openalex"] = True
+                st.session_state["use_html"] = True
+                st.session_state["use_ai"] = True
+                st.session_state["use_scidir"] = True
+            st.success("Modus angewendet.")
+
+        rows = st.number_input("Max. Treffer pro Journal", min_value=5, max_value=300, step=5, value=st.session_state["rows_input"], key="rows_input")
+        ai_model = st.text_input("OpenAI Modell", value=st.session_state["ai_model_input"], key="ai_model_input")
+        max_total = st.slider("Max. Treffer gesamt", min_value=100, max_value=2000, value=800, step=50, key="max_total_input")
+        topic_query = st.text_input("Fokus-Keywords (optional, Crossref Filter)", value="", key="topic_query_input")
+
+        st.markdown("**Quellen & Fallbacks**")
+        st.checkbox("Semantic Scholar", value=st.session_state["use_semantic"], key="use_semantic")
+        st.checkbox("OpenAlex", value=st.session_state["use_openalex"], key="use_openalex")
+        st.checkbox("HTML-Abstracts", value=st.session_state["use_html"], key="use_html")
+        st.checkbox("AI-Extraktion (Fallback)", value=st.session_state["use_ai"], key="use_ai")
+        st.checkbox("ScienceDirect Spezial", value=st.session_state["use_scidir"], key="use_scidir")
+
+with st.expander("🔑 Keys & Netzwerk (optional)", expanded=False):
+    with st.container(border=True):
+        st.markdown("### 🔑 Keys & Netzwerk")
+        api_key_input = st.text_input("OpenAI API-Key", type="password", value="", help="Optional. Wird für KI-Funktionen benötigt.")
+        if api_key_input:
+            os.environ["PAPERSCOUT_OPENAI_API_KEY"] = api_key_input
+            os.environ["OPENAI_API_KEY"] = api_key_input
+            st.caption("API-Key für diese Sitzung gesetzt.")
+
+        crossref_mail = st.text_input("Crossref Mailto", value=os.getenv("CROSSREF_MAILTO", ""), help="Empfohlen für stabilere Crossref-API.")
+        if crossref_mail:
+            os.environ["CROSSREF_MAILTO"] = crossref_mail
+            st.caption("Crossref-Mailto gesetzt.")
+
+        proxy_url = st.text_input("Proxy (optional)", value=os.getenv("PAPERSCOUT_PROXY", ""), help="Format: http://user:pass@host:port")
+        if proxy_url:
+            st.session_state["proxy_url"] = proxy_url.strip()
+            st.success("Proxy aktiv.")
         else:
-            st.error("SMTP nicht vollständig konfiguriert. Bitte Secrets/Env setzen.")
+            st.session_state["proxy_url"] = ""
+
+        with st.expander("E-Mail Versand (Status)", expanded=False):
+            ok = all(os.getenv(k) for k in ["EMAIL_HOST","EMAIL_PORT","EMAIL_USER","EMAIL_PASSWORD","EMAIL_FROM"])
+            if ok:
+                st.success(f"SMTP konfiguriert: {os.getenv('EMAIL_FROM')}")
+            else:
+                st.error("SMTP nicht vollständig konfiguriert.")
 
 st.divider()
 
@@ -1098,11 +1583,17 @@ run_col1, run_col2, run_col3 = st.columns([2, 1, 2])
 with run_col2:
     run = st.button("🚀 Let´s go! Metadaten ziehen", use_container_width=True, type="primary")
 
+# Sync relevance query from input
+st.session_state["relevance_query"] = st.session_state.get("relevance_query_input", "")
+
 if run:
     if not chosen:
-        st.warning("Bitte mindestens ein Journal in Schritt 1 auswählen.")
+        st.warning("Bitte mindestens ein Journal auswählen.")
     else:
-        st.info("Starte Abruf — Crossref, Semantic Scholar, OpenAlex, KI-Fallback...")
+        st.info("Starte Abruf — Crossref, Semantic Scholar, OpenAlex, Fallbacks...")
+
+        # Vorherige Ergebnisse merken für "Compare Runs"
+        st.session_state["last_run_df"] = st.session_state.get("results_df", None)
 
         all_rows: List[Dict[str, Any]] = []
         progress = st.progress(0, "Starte...")
@@ -1119,20 +1610,81 @@ if run:
         else:
             s_since, s_until = str(since), str(until)
 
+        options = {
+            "use_semantic": st.session_state.get("use_semantic", True),
+            "use_openalex": st.session_state.get("use_openalex", True),
+            "use_html": st.session_state.get("use_html", True),
+            "use_ai": st.session_state.get("use_ai", True),
+            "use_scidir": st.session_state.get("use_scidir", True),
+        }
+
         for i, j in enumerate(chosen, 1):
             progress.progress(min(i / max(n, 1), 1.0), f"({i}/{n}) Verarbeite: {j}")
-            rows_j = collect_all(j, s_since, s_until, int(rows), ai_model)
+            rows_j = collect_all(
+                j,
+                s_since,
+                s_until,
+                int(rows),
+                ai_model,
+                topic_query=st.session_state.get("topic_query_input","").strip() or None,
+                options=options,
+            )
             rows_j = dedup(rows_j)
             all_rows.extend(rows_j)
 
         progress.empty()
+        status_box = st.empty()
+        status_box.info("Finalisiere Ergebnisse: Deduplizierung & Aufbereitung …")
         if not all_rows:
             st.warning("Keine Treffer im gewählten Zeitraum/Journals gefunden.")
+            status_box.empty()
         else:
+            # globale Deduplizierung + Limit
+            status_box.info("Bereinige und aggregiere Treffer …")
+            all_rows = dedup(all_rows)
+            max_total_val = int(st.session_state.get("max_total_input", 0) or 0)
+            if max_total_val > 0:
+                all_rows = all_rows[:max_total_val]
+
+            status_box.info("Baue Ergebnis-DataFrame …")
             df = pd.DataFrame(all_rows)
-            cols = [c for c in ["title", "doi", "issued", "journal", "authors", "abstract", "url"] if c in df.columns]
+            cols = [c for c in ["title", "doi", "issued", "journal", "authors", "abstract", "url", "abstract_source"] if c in df.columns]
             if cols:
                 df = df[cols]
+
+            # --- Auto-Relevanz & Auto-Briefing (One-Step Workflow) ---
+            rel_query = (st.session_state.get("relevance_query_input", "") or "").strip()
+            rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+            if rel_query:
+                if rel_key:
+                    status_box.info("Berechne Relevanz (Embeddings) …")
+                    min_len = int(st.session_state.get("relevance_min_text_len", 30) or 30)
+                    rel_series = compute_relevance_scores(
+                        df,
+                        rel_query,
+                        min_text_len=min_len,
+                    )
+                    if rel_series is not None:
+                        df["relevance_score"] = rel_series
+                        why_list = []
+                        for _, row in df.iterrows():
+                            text = (str(row.get("abstract","")) + " " + str(row.get("title",""))).strip()
+                            why_list.append(_why_relevant(rel_query, text))
+                        df["relevance_why"] = why_list
+
+                        # Auto-Briefing: Top Relevanz
+                        status_box.info("Erzeuge Research Brief …")
+                        top_n = int(st.session_state.get("brief_n", 8) or 8)
+                        top_n = max(3, min(top_n, 12))
+                        top_df = df.sort_values("relevance_score", ascending=False).head(top_n)
+                        brief_lang = st.session_state.get("brief_lang", "Deutsch")
+                        brief = ai_generate_digest(top_df.to_dict(orient="records"), model=ai_model, lang=brief_lang)
+                        if brief:
+                            st.session_state["research_brief"] = brief
+                    else:
+                        st.warning("Relevanz konnte nicht automatisch berechnet werden.")
+                else:
+                    st.info("Relevanz & Briefing übersprungen: Bitte OpenAI API-Key im Command Center setzen.")
 
             st.session_state["results_df"] = df
             st.session_state["selected_dois"] = set() # Auswahl zurücksetzen
@@ -1142,6 +1694,16 @@ if run:
                 if key.startswith("sel_card_"):
                     del st.session_state[key]
             
+            # Compare Runs: neue DOIs seit letztem Lauf
+            prev = st.session_state.get("last_run_df")
+            if isinstance(prev, pd.DataFrame) and not prev.empty:
+                prev_dois = set(prev.get("doi", pd.Series(dtype=str)).astype(str).str.lower())
+                new_mask = ~df["doi"].astype(str).str.lower().isin(prev_dois)
+                st.session_state["new_since_last_run"] = df[new_mask].copy()
+            else:
+                st.session_state["new_since_last_run"] = None
+
+            status_box.success("Ergebnisse bereit.")
             st.success(f"🎉 {len(df)} Treffer geladen!")
 
 # ================================
@@ -1167,6 +1729,7 @@ def toggle_doi(doi, key):
 if "results_df" in st.session_state and not st.session_state["results_df"].empty:
     st.divider()
     st.subheader("📚 Ergebnisse")
+
     
     # --- NEU: Link für "Runter" ---
     st.markdown(
@@ -1189,7 +1752,23 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         unsafe_allow_html=True
     )
 
-    df = st.session_state["results_df"].copy()
+    # --- Basisdaten (für Analyse + Ergebnisliste) ---
+    df = add_signal_scores(st.session_state["results_df"].copy())
+
+    # --- Research Question & Briefing (oben, ohne Karten) ---
+    rel_query_display = (st.session_state.get("relevance_query_input", "") or "").strip()
+    st.markdown("### Research Question")
+    if rel_query_display:
+        st.markdown(f"**{rel_query_display}**")
+    else:
+        st.caption("Noch keine Research Question angegeben.")
+
+    brief_text = st.session_state.get("research_brief", "")
+    st.markdown("### Briefing")
+    if brief_text:
+        st.markdown(brief_text)
+    else:
+        st.caption("Noch kein Briefing. Starte einen Run mit Research Question und API‑Key.")
 
     def _to_http(u: str) -> str:
         if not isinstance(u, str): return ""
@@ -1223,6 +1802,9 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         issued = row.get("issued", "") or ""
         authors = row.get("authors", "") or ""
         relevance = row.get("relevance_score", None)
+        signal_score = row.get("signal_score", None)
+        days_ago = row.get("days_ago", None)
+        why = row.get("relevance_why", "") or ""
         abstract = row.get("abstract", "") or ""
         
         left, right = st.columns([0.07, 0.93])
@@ -1251,6 +1833,8 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             # NEU: Relevanz prominent in der Meta-Zeile
             if relevance is not None and relevance != "" and not pd.isna(relevance):
                 meta_parts.append(f"<b>Relevanz: {relevance}/100</b>")
+            if signal_score is not None and signal_score != "" and not pd.isna(signal_score):
+                meta_parts.append(f"<b>Signal: {signal_score}/100</b>")
             
             meta_text = " · ".join([x for x in meta_parts if x])
             # Wir nutzen hier kein html.escape für meta_text komplett, weil wir <b> Tags drin haben wollen
@@ -1269,23 +1853,42 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             link_html = ""
             if link_val and link_val != doi_safe:
                 link_html = '<b>URL:</b> <a href="' + link_safe + '" target="_blank">' + link_val_safe + '</a><br>'
+
+            src = row.get("abstract_source", "") or ""
+            src_html = ""
+            if src:
+                src_html = "<b>Abstract-Quelle:</b> " + html.escape(str(src)) + "<br>"
             
+            if why and relevance is not None and not pd.isna(relevance):
+                why_html = f"<div class='meta'><b>Warum relevant:</b> {html.escape(str(why))}</div>"
+            else:
+                why_html = ""
+
             if abstract:
                 abstract_safe = html.escape(abstract)
                 abstract_html = '<b>Abstract</b><br><p class="abstract">' + abstract_safe + '</p>'
             else:
                 abstract_html = "<i>Kein Abstract vorhanden.</i>"
 
+            chip_html = ""
+            if days_ago is not None and not pd.isna(days_ago) and isinstance(days_ago, (int, float)):
+                if days_ago <= 7:
+                    chip_html += "<span class='ps-chip'>NEW</span>"
+            if relevance is not None and not pd.isna(relevance) and float(relevance) >= 80:
+                chip_html += "<span class='ps-chip hot'>HOT</span>"
+
             card_html = (
                 '<div class="result-card">'
-                f'<h3>{title_safe}</h3>'
+                f'<h3>{title_safe}{chip_html}</h3>'
                 f'<div class="meta">{meta_text}</div>'
                 f'<div class="authors">{authors_safe}</div>'
+                f'{why_html}'
                 '<details>'
                 '<summary>Details anzeigen</summary>'
                 '<div>' +
                 doi_html +
                 link_html +
+                src_html +
                 '<br>' +
                 abstract_html +
                 '</div>'
@@ -1294,132 +1897,537 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             )
             st.markdown(card_html, unsafe_allow_html=True)
 
-
-    # --------------------------------------
-    # 🧩 Themencluster (Beta) – OpenAI-Embeddings
-    # --------------------------------------
-    st.markdown("### 🧩 Themencluster (Beta)")
-    key_openai = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not key_openai:
-        st.info("Bitte trage einen OpenAI API-Key ein (Tab 'Einstellungen'), um Themencluster zu berechnen.")
-    else:
-        # Layout für Controls: Links Slider, Rechts Button
+    def section_card(title: str, desc: str, key: str, default_open: bool = False, accent: bool = False, show_toggle: bool = True):
+        if key not in st.session_state:
+            st.session_state[key] = default_open
         with st.container(border=True):
-            cl_controls_1, cl_controls_2, cl_controls_3 = st.columns([1, 1, 1])
-            with cl_controls_1:
-                 cluster_k = st.slider(
-                    "Anzahl Cluster",
-                    min_value=2,
-                    max_value=10,
-                    value=5,
-                    step=1,
-                    key="cluster_k_slider",
-                )
-            with cl_controls_2:
-                 cluster_min_docs = st.slider(
-                    "Min. Artikel/Cluster",
-                    min_value=3,
-                    max_value=20,
-                    value=5,
-                    step=1,
-                    key="cluster_min_docs_slider",
-                )
-            with cl_controls_3:
-                st.write("") # Spacer
-                st.write("") # Spacer
-                if st.button("🔍 Themencluster berechnen", use_container_width=True, key="btn_cluster_compute"):
-                    clusters = build_clusters_openai(df, k=cluster_k, min_docs=cluster_min_docs)
-                    if not clusters:
-                        st.warning("Konnte keine sinnvollen Themencluster bilden (zu wenig Text oder technische Probleme).")
-                    else:
-                        st.session_state["topic_clusters_openai"] = clusters
-                        st.success(f"{len(clusters)} Cluster erstellt.")
-
-        # --- UPDATE: Karten-Design (Expander untereinander) ---
-        clusters = st.session_state.get("topic_clusters_openai") or []
-        if clusters:
-            for c_idx, cluster in enumerate(clusters):
-                label_text = cluster["label"]
-                # Wir nutzen st.expander für das "Aufklappen"
-                with st.expander(label_text, expanded=False):
-                    # Inhalt in Container für Styling
-                    st.markdown(f"**Beispieltext:** *{cluster['sample_text']}*")
-                    
-                    sub_df = df.loc[cluster["indices"]] if cluster["indices"] else pd.DataFrame()
-                    st.caption(f"{len(sub_df)} Artikel in diesem Cluster:")
-                    
-                    # Hier rendern wir nun auch die vollwertigen Karten mit Checkboxen und Abstract
-                    for r_idx, (_, row) in enumerate(sub_df.iterrows()):
-                        render_row_ui(row, f"clus_{c_idx}_{r_idx}")
-        else:
-            if key_openai:
-                st.caption("Noch keine Cluster berechnet. Wähle Parameter und klicke auf „Themencluster berechnen“.")
-
-    st.markdown("---")
-
-    # --------------------------------------
-    # 🎯 Relevanz-Rating (Beta) - JETZT GARANTIERT NACH ERGEBNISSEN
-    # --------------------------------------
-    st.markdown("### 🎯 Relevanz-Rating (Beta)")
-
-    rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not rel_key:
-        st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (Tab 'Einstellungen').")
-    else:
-        # Layout Aufteilung: Links Eingabe, Rechts Ergebnisse
-        # Damit die Ergebnisse nicht "gequetscht" wirken, geben wir rechts mehr Platz
-        rel_col_left, rel_col_right = st.columns([1, 2])
-        
-        with rel_col_left:
-            st.markdown("#### Eingabe")
-            relevance_query = st.text_area(
-                "Forschungsinteresse / Fragestellung:",
-                value=st.session_state.get("relevance_query", ""),
-                height=150,
-                help="Beispiel: 'transformational leadership, follower well-being, mediated by trust'",
-                key="relevance_query_input",
-            )
-
-            min_len = st.slider(
-                "Min. Textlänge (Zeichen)",
-                min_value=20,
-                max_value=100,
-                value=30,
-                step=5,
-                key="relevance_min_text_len",
-            )
-
-            if st.button("⭐ Relevanz berechnen", use_container_width=True, key="btn_compute_relevance"):
-                if not relevance_query.strip():
-                    st.warning("Bitte gib eine Beschreibung ein.")
-                else:
-                    st.session_state["relevance_query"] = relevance_query.strip()
-                    rel_series = compute_relevance_scores(
-                        df,
-                        relevance_query.strip(),
-                        min_text_len=min_len,
-                    )
-                    if rel_series is None:
-                        st.warning("Konnte keine Werte berechnen.")
-                    else:
-                        # In DataFrame übernehmen
-                        df["relevance_score"] = rel_series
-                        st.session_state["results_df"] = df
-                        st.success("Berechnet!")
-                        st.rerun()
-
-        with rel_col_right:
-            st.markdown("#### Top 10 Ergebnisse")
-            if "relevance_score" in df.columns:
-                top_df = df.sort_values("relevance_score", ascending=False).head(10)
-                # Hier rendern wir ebenfalls die vollwertigen Karten
-                for r_idx, (_, row) in enumerate(top_df.iterrows()):
-                    render_row_ui(row, f"rel_top_{r_idx}")
+            if accent:
+                st.markdown("<div class='ps-callout'>Empfohlen</div>", unsafe_allow_html=True)
+            st.markdown(f"### {title}")
+            st.caption(desc)
+            if show_toggle:
+                st.toggle("Optionen anzeigen", key=key)
             else:
-                st.caption("Gib links dein Thema ein und klicke auf Berechnen, um die Top 10 zu sehen.")
+                st.session_state[key] = True
+            body = st.container()
+        return st.session_state[key], body
+
+    analysis_open, analysis_body = section_card(
+        "Weitere Analysemöglichkeiten ausklappen",
+        "Empfehlungen, Cluster, Trends und manuelle Relevanz-Bewertung.",
+        "exp_more",
+    )
+    if analysis_open:
+        with analysis_body:
+            # --- Compare Runs ---
+            new_df = st.session_state.get("new_since_last_run")
+            if isinstance(new_df, pd.DataFrame) and not new_df.empty:
+                with st.expander(f"🆕 Neu seit letztem Lauf ({len(new_df)})", expanded=False):
+                    for r_idx, (_, row) in enumerate(new_df.head(10).iterrows()):
+                        render_row_ui(row, f"new_{r_idx}")
+                    if len(new_df) > 10:
+                        st.caption(f"Noch {len(new_df) - 10} weitere neue Ergebnisse.")
+
+            # --------------------------------------
+            # 🧩 Themencluster (Beta) – OpenAI-Embeddings
+            # --------------------------------------
+            cluster_open, cluster_body = section_card(
+                "🧩 Themencluster (Beta)",
+                "Findet thematische Gruppen in den Abstracts und vergibt automatische Clusternamen.",
+                "exp_cluster",
+            )
+            if cluster_open:
+                with cluster_body:
+                    key_openai = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+                    if not key_openai:
+                        st.info("Bitte trage einen OpenAI API-Key ein (oben im Command Center), um Themencluster zu berechnen.")
+                    else:
+                        # Layout für Controls: Links Slider, Rechts Button
+                        with st.container(border=True):
+                            cl_controls_1, cl_controls_2, cl_controls_3 = st.columns([1, 1, 1])
+                            with cl_controls_1:
+                                 cluster_k = st.slider(
+                                    "Anzahl Cluster",
+                                    min_value=2,
+                                    max_value=10,
+                                    value=5,
+                                    step=1,
+                                    key="cluster_k_slider",
+                                )
+                            with cl_controls_2:
+                                 cluster_min_docs = st.slider(
+                                    "Min. Artikel/Cluster",
+                                    min_value=3,
+                                    max_value=20,
+                                    value=5,
+                                    step=1,
+                                    key="cluster_min_docs_slider",
+                                )
+                            with cl_controls_3:
+                                st.write("") # Spacer
+                                st.write("") # Spacer
+                                if st.button("🔍 Themencluster berechnen", use_container_width=True, key="btn_cluster_compute"):
+                                    clusters = build_clusters_openai(df, k=cluster_k, min_docs=cluster_min_docs)
+                                    if not clusters:
+                                        st.warning("Konnte keine sinnvollen Themencluster bilden (zu wenig Text oder technische Probleme).")
+                                    else:
+                                        st.session_state["topic_clusters_openai"] = clusters
+                                        st.success(f"{len(clusters)} Cluster erstellt.")
+
+                        # --- UPDATE: Karten-Design (Expander untereinander) ---
+                        clusters = st.session_state.get("topic_clusters_openai") or []
+                        if clusters:
+                            for c_idx, cluster in enumerate(clusters):
+                                label_text = cluster["label"]
+                                # Wir nutzen st.expander für das "Aufklappen"
+                                with st.expander(label_text, expanded=False):
+                                    # Inhalt in Container für Styling
+                                    st.markdown(f"**Beispieltext:** *{cluster['sample_text']}*")
+                                    
+                                    sub_df = df.loc[cluster["indices"]] if cluster["indices"] else pd.DataFrame()
+                                    st.caption(f"{len(sub_df)} Artikel in diesem Cluster:")
+                                    
+                                    # Hier rendern wir nun auch die vollwertigen Karten mit Checkboxen und Abstract
+                                    for r_idx, (_, row) in enumerate(sub_df.iterrows()):
+                                        render_row_ui(row, f"clus_{c_idx}_{r_idx}")
+                        else:
+                            if key_openai:
+                                st.caption("Noch keine Cluster berechnet. Wähle Parameter und klicke auf „Themencluster berechnen“.")
+
+            # --------------------------------------
+            # 🧭 Trends & Insights (Zeitvergleich + Journal Trends)
+            # --------------------------------------
+            trends_open, trends_body = section_card(
+                "🧭 Trends & Insights",
+                "Zeigt Trend-Themen, Publikationen pro Monat und Abstract-Quellen.",
+                "exp_trends",
+            )
+            if trends_open:
+                with trends_body:
+                    trend = _trend_summary(df, recent_days=30)
+                    if trend:
+                        st.caption(f"Zeitraum: {trend['recent_start']} bis {trend['recent_end']} (letzte 30 Tage)")
+                        t_cols = st.columns(3)
+                        with t_cols[0]:
+                            st.markdown("**Top-Themen (letzte 30 Tage)**")
+                            st.write(", ".join(trend.get("recent_terms", [])) or "–")
+                        with t_cols[1]:
+                            st.markdown("**Top-Themen (davor)**")
+                            st.write(", ".join(trend.get("prior_terms", [])) or "–")
+                        with t_cols[2]:
+                            st.markdown("**Emerging Terms**")
+                            st.write(", ".join(trend.get("emerging", [])) or "–")
+                    else:
+                        st.caption("Nicht genügend Datumsangaben für Trend-Analyse.")
+
+                    # Journal-Trends
+                    journal_counts = df.get("journal", pd.Series(dtype=str)).value_counts().head(5)
+                    if not journal_counts.empty:
+                        st.markdown("**Top Journals (Anzahl Treffer)**")
+                        st.write(", ".join([f"{j} ({c})" for j, c in journal_counts.items()]))
+
+                    # Zeitverlauf (Monat)
+                    month_counts = df.get("issued", pd.Series(dtype=str)).dropna().astype(str).str[:7]
+                    month_counts = month_counts[month_counts.str.match(r"\d{4}-\d{2}")]
+                    if not month_counts.empty:
+                        st.markdown("**Publikationen pro Monat**")
+                        trend_series = month_counts.value_counts().sort_index()
+                        st.bar_chart(trend_series)
+
+                    if trend:
+                        emerging = trend.get("emerging", [])
+                        if emerging:
+                            st.markdown("**Query-Ideen (automatisch)**")
+                            suggestions = []
+                            if len(emerging) >= 3:
+                                suggestions.append(", ".join(emerging[:3]))
+                            if len(emerging) >= 2:
+                                suggestions.append(" ".join(emerging[:2]))
+                            suggestions.append(emerging[0])
+                            st.write(" · ".join(suggestions[:3]))
+
+                    source_counts = df.get("abstract_source", pd.Series(dtype=str)).value_counts()
+                    if not source_counts.empty:
+                        st.markdown("**Abstract-Quellen**")
+                        st.bar_chart(source_counts)
+
+            # --------------------------------------
+            # 🔮 Empfehlungen (ähnliche Reads zu Auswahl)
+            # --------------------------------------
+            rec_open, rec_body = section_card(
+                "🔮 Empfohlene nächste Reads",
+                "Schlägt Paper vor, die deiner Auswahl semantisch ähneln.",
+                "exp_recs",
+            )
+            if rec_open:
+                with rec_body:
+                    rec_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+                    if not rec_key:
+                        st.info("Für Empfehlungen wird ein OpenAI API-Key benötigt (oben im Command Center).")
+                    else:
+                        rec_cols = st.columns([1, 3])
+                        with rec_cols[0]:
+                            rec_n = st.slider("Anzahl Empfehlungen", min_value=3, max_value=15, value=6, step=1)
+                            if st.button("Empfehlungen berechnen", use_container_width=True):
+                                sel = st.session_state.get("selected_dois", set())
+                                if not sel:
+                                    st.warning("Bitte wähle mindestens eine DOI aus.")
+                                else:
+                                    # Build embeddings cache
+                                    cache = st.session_state.get("embedding_cache", {})
+                                    def _embed_text(text: str) -> List[float]:
+                                        key = hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+                                        if key in cache:
+                                            return cache[key]
+                                        emb = _get_embedding(text)
+                                        if emb:
+                                            cache[key] = emb
+                                        return emb
+
+                                    # Mean embedding of selected
+                                    sel_rows = df[df["doi"].astype(str).str.lower().isin(sel)]
+                                    sel_vecs = []
+                                    for _, r in sel_rows.iterrows():
+                                        text = (str(r.get("abstract","")) + " " + str(r.get("title",""))).strip()
+                                        emb = _embed_text(text)
+                                        if emb:
+                                            sel_vecs.append(emb)
+                                    if not sel_vecs:
+                                        st.warning("Keine Embeddings für Auswahl verfügbar.")
+                                    else:
+                                        # Average
+                                        dim = len(sel_vecs[0])
+                                        mean = [0.0] * dim
+                                        for v in sel_vecs:
+                                            for i in range(dim):
+                                                mean[i] += v[i]
+                                        mean = [v / len(sel_vecs) for v in mean]
+
+                                        # Score others
+                                        scores = []
+                                        for idx, r in df.iterrows():
+                                            if str(r.get("doi","")).lower() in sel:
+                                                continue
+                                            text = (str(r.get("abstract","")) + " " + str(r.get("title",""))).strip()
+                                            emb = _embed_text(text)
+                                            if not emb:
+                                                continue
+                                            scores.append((idx, _cosine_sim(mean, emb)))
+                                        scores = sorted(scores, key=lambda x: x[1], reverse=True)[:rec_n]
+                                        st.session_state["rec_indices"] = [i for i, _ in scores]
+                                        st.session_state["embedding_cache"] = cache
+
+                        with rec_cols[1]:
+                            rec_idx = st.session_state.get("rec_indices", [])
+                            if rec_idx:
+                                sub_df = df.loc[rec_idx]
+                                for r_idx, (_, row) in enumerate(sub_df.iterrows()):
+                                    render_row_ui(row, f"rec_{r_idx}")
+                            else:
+                                st.caption("Wähle DOIs und berechne Empfehlungen.")
+
+            # --------------------------------------
+            # 🧠 Research Brief (KI) - Regenerieren
+            # --------------------------------------
+            brief_open, brief_body = section_card(
+                "🧠 Research Brief (Regenerieren)",
+                "Erzeuge das Briefing erneut (z. B. mit anderem Umfang).",
+                "exp_brief",
+            )
+            if brief_open:
+                with brief_body:
+                    brief_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+                    if not brief_key:
+                        st.info("Für den Research Brief wird ein OpenAI API-Key benötigt (oben im Command Center).")
+                    else:
+                        b_cols = st.columns([1, 2])
+                        with b_cols[0]:
+                            brief_source = st.radio(
+                                "Quelle",
+                                ["Auswahl", "Top Relevanz", "Alle (Limit)"],
+                                index=0,
+                                key="brief_source",
+                            )
+                            brief_n = st.slider("Anzahl Papers", min_value=3, max_value=12, value=8, step=1, key="brief_n")
+                            if st.button("Briefing erzeugen", use_container_width=True):
+                                if brief_source == "Auswahl":
+                                    sel = st.session_state.get("selected_dois", set())
+                                    if not sel:
+                                        st.warning("Bitte wähle mindestens eine DOI aus.")
+                                    else:
+                                        sub = df[df["doi"].astype(str).str.lower().isin(sel)].head(brief_n)
+                                        brief = ai_generate_digest(sub.to_dict(orient="records"), model=ai_model, lang=st.session_state.get("brief_lang", "Deutsch"))
+                                        st.session_state["research_brief"] = brief
+                                elif brief_source == "Top Relevanz" and "relevance_score" in df.columns:
+                                    sub = df.sort_values("relevance_score", ascending=False).head(brief_n)
+                                    brief = ai_generate_digest(sub.to_dict(orient="records"), model=ai_model, lang=st.session_state.get("brief_lang", "Deutsch"))
+                                    st.session_state["research_brief"] = brief
+                                else:
+                                    sub = df.head(brief_n)
+                                    brief = ai_generate_digest(sub.to_dict(orient="records"), model=ai_model, lang=st.session_state.get("brief_lang", "Deutsch"))
+                                    st.session_state["research_brief"] = brief
+                        with b_cols[1]:
+                            brief_text = st.session_state.get("research_brief", "")
+                            if brief_text:
+                                st.markdown(brief_text)
+                            else:
+                                st.caption("Noch kein Briefing. Quelle wählen und generieren.")
+
+            # --------------------------------------
+            # 🎯 Relevanz-Rating (Beta) - Manuell
+            # --------------------------------------
+            rel_open, rel_body = section_card(
+                "🎯 Relevanz-Rating (Beta)",
+                "Bewertet Papers nach semantischer Nähe zu deinem Forschungsfokus.",
+                "exp_relevance",
+                default_open=True,
+                accent=True,
+            )
+            if rel_open:
+                with rel_body:
+                    rel_key = os.getenv("PAPERSCOUT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+                    if not rel_key:
+                        st.info("Für das Relevanz-Rating wird ein OpenAI API-Key benötigt (oben im Command Center).")
+                    else:
+                        # Layout Aufteilung: Links Eingabe, Rechts Ergebnisse
+                        # Damit die Ergebnisse nicht "gequetscht" wirken, geben wir rechts mehr Platz
+                        rel_col_left, rel_col_right = st.columns([1, 2])
+                        
+                        with rel_col_left:
+                            st.markdown("#### Eingabe")
+                            advanced_rel = st.checkbox("Mehrere Queries (gewichtet)", value=False, key="advanced_relevance")
+                            if advanced_rel:
+                                if "rel_queries" not in st.session_state:
+                                    st.session_state["rel_queries"] = [{"text": "", "weight": 1.0}]
+                                for i, q in enumerate(st.session_state["rel_queries"]):
+                                    row_cols = st.columns([3, 1, 1])
+                                    with row_cols[0]:
+                                        st.text_input("Query", value=q.get("text",""), key=f"rel_q_{i}")
+                                    with row_cols[1]:
+                                        st.number_input("Gewicht", min_value=0.1, max_value=5.0, value=float(q.get("weight",1.0)), step=0.1, key=f"rel_w_{i}")
+                                    with row_cols[2]:
+                                        if st.button("Entfernen", key=f"rel_rm_{i}"):
+                                            st.session_state["rel_queries"].pop(i)
+                                            st.rerun()
+                                if st.button("Query hinzufügen"):
+                                    st.session_state["rel_queries"].append({"text": "", "weight": 1.0})
+                                # Sync back inputs
+                                synced = []
+                                for i in range(len(st.session_state["rel_queries"])):
+                                    synced.append({
+                                        "text": st.session_state.get(f"rel_q_{i}", ""),
+                                        "weight": st.session_state.get(f"rel_w_{i}", 1.0),
+                                    })
+                                st.session_state["rel_queries"] = synced
+                                relevance_query = " ".join([q["text"] for q in synced if q.get("text")])
+                            else:
+                                relevance_query = st.text_area(
+                                    "Forschungsinteresse / Fragestellung:",
+                                    value=st.session_state.get("relevance_query_input", ""),
+                                    height=150,
+                                    help="Beispiel: 'transformational leadership, follower well-being, mediated by trust'",
+                                    key="relevance_query_detail",
+                                )
+
+                            min_len = st.slider(
+                                "Min. Textlänge (Zeichen)",
+                                min_value=20,
+                                max_value=100,
+                                value=30,
+                                step=5,
+                                key="relevance_min_text_len",
+                            )
+
+                            if st.button("⭐ Relevanz berechnen", use_container_width=True, key="btn_compute_relevance"):
+                                if not relevance_query.strip():
+                                    st.warning("Bitte gib eine Beschreibung ein.")
+                                else:
+                                    st.session_state["relevance_query"] = relevance_query.strip()
+                                    if advanced_rel:
+                                        rel_series = compute_relevance_scores_multi(
+                                            df,
+                                            st.session_state.get("rel_queries", []),
+                                            min_text_len=min_len,
+                                        )
+                                    else:
+                                        rel_series = compute_relevance_scores(
+                                            df,
+                                            relevance_query.strip(),
+                                            min_text_len=min_len,
+                                        )
+                                    if rel_series is None:
+                                        st.warning("Konnte keine Werte berechnen.")
+                                    else:
+                                        # In DataFrame übernehmen
+                                        df["relevance_score"] = rel_series
+                                        # Warum relevant? (simple term overlap)
+                                        combined_query = relevance_query.strip()
+                                        why_list = []
+                                        for _, row in df.iterrows():
+                                            text = (str(row.get("abstract","")) + " " + str(row.get("title",""))).strip()
+                                            why_list.append(_why_relevant(combined_query, text))
+                                        df["relevance_why"] = why_list
+                                        st.session_state["results_df"] = df
+                                        st.success("Berechnet!")
+                                        st.rerun()
+
+                        with rel_col_right:
+                            st.markdown("#### Top 10 Ergebnisse")
+                            if "relevance_score" in df.columns:
+                                top_df = df.sort_values("relevance_score", ascending=False).head(10)
+                                # Hier rendern wir ebenfalls die vollwertigen Karten
+                                for r_idx, (_, row) in enumerate(top_df.iterrows()):
+                                    render_row_ui(row, f"rel_top_{r_idx}")
+                            else:
+                                st.caption("Gib links dein Thema ein und klicke auf Berechnen, um die Top 10 zu sehen.")
+
+    # --- Inline Filter & Sort (für Ergebnisliste) ---
+    base_df = df.copy()
+    f_cols = st.columns([2, 1, 1, 1, 1])
+    with f_cols[0]:
+        filter_keyword = st.text_input("🔎 Keyword in Titel/Abstract", value="", key="filter_keyword")
+    with f_cols[1]:
+        filter_author = st.text_input("👤 Autor enthält", value="", key="filter_author")
+    with f_cols[2]:
+        filter_has_abs = st.checkbox("Nur mit Abstract", value=False, key="filter_has_abs")
+    with f_cols[3]:
+        filter_journals = st.multiselect("📘 Journals", options=sorted(base_df.get("journal", pd.Series(dtype=str)).dropna().unique().tolist()))
+    with f_cols[4]:
+        min_rel = 0.0
+        if "relevance_score" in base_df.columns:
+            min_rel = st.slider("⭐ Min. Relevanz", min_value=0.0, max_value=100.0, value=0.0, step=5.0)
+
+    df = base_df.copy()
+    if filter_keyword.strip():
+        kw = filter_keyword.strip().lower()
+        df = df[
+            df.get("title", "").astype(str).str.lower().str.contains(kw, na=False) |
+            df.get("abstract", "").astype(str).str.lower().str.contains(kw, na=False)
+        ]
+    if filter_author.strip():
+        au = filter_author.strip().lower()
+        df = df[df.get("authors", "").astype(str).str.lower().str.contains(au, na=False)]
+    if filter_has_abs:
+        df = df[df.get("abstract", "").astype(str).str.len() > 0]
+    if filter_journals:
+        df = df[df.get("journal", "").isin(filter_journals)]
+    if "relevance_score" in df.columns:
+        df = df[df["relevance_score"].fillna(0.0) >= min_rel]
+
+    sort_col1, sort_col2 = st.columns([1, 3])
+    with sort_col1:
+        sort_options = ["Neueste zuerst", "Älteste zuerst", "Signal-Score", "Relevanz", "Titel (A-Z)"]
+        if "relevance_score" in df.columns and df["relevance_score"].notna().any():
+            default_sort = "Relevanz"
+        else:
+            default_sort = "Neueste zuerst"
+        sort_by = st.selectbox(
+            "Sortieren",
+            sort_options,
+            index=sort_options.index(default_sort),
+        )
+    if sort_by == "Neueste zuerst":
+        df["_issued_dt"] = df.get("issued", "").astype(str).apply(_safe_parse_date)
+        df = df.sort_values("_issued_dt", ascending=False, na_position="last").drop(columns=["_issued_dt"])
+    elif sort_by == "Älteste zuerst":
+        df["_issued_dt"] = df.get("issued", "").astype(str).apply(_safe_parse_date)
+        df = df.sort_values("_issued_dt", ascending=True, na_position="last").drop(columns=["_issued_dt"])
+    elif sort_by == "Signal-Score":
+        if "signal_score" in df.columns:
+            df = df.sort_values("signal_score", ascending=False, na_position="last")
+        else:
+            df["_issued_dt"] = df.get("issued", "").astype(str).apply(_safe_parse_date)
+            df = df.sort_values("_issued_dt", ascending=False, na_position="last").drop(columns=["_issued_dt"])
+    elif sort_by == "Relevanz":
+        if "relevance_score" in df.columns:
+            df = df.sort_values("relevance_score", ascending=False, na_position="last")
+        else:
+            df["_issued_dt"] = df.get("issued", "").astype(str).apply(_safe_parse_date)
+            df = df.sort_values("_issued_dt", ascending=False, na_position="last").drop(columns=["_issued_dt"])
+    elif sort_by == "Titel (A-Z)":
+        df = df.sort_values("title", ascending=True, na_position="last")
+
+    # --- Pagination ---
+    p_cols = st.columns([1, 1, 2])
+    with p_cols[0]:
+        page_size = st.selectbox("Ergebnisse pro Seite", [25, 50, 100], index=1, key="page_size")
+    total_pages = max(1, ceil(len(df) / page_size))
+    current_page = st.session_state.get("page_num", 1)
+    if current_page > total_pages:
+        current_page = total_pages
+    with p_cols[1]:
+        page_num = st.selectbox("Seite", list(range(1, total_pages + 1)), index=list(range(1, total_pages + 1)).index(current_page), key="page_num")
+    start_idx = (page_num - 1) * page_size
+    end_idx = start_idx + page_size
+    df_page = df.iloc[start_idx:end_idx].copy()
+    with p_cols[2]:
+        st.caption(f"Zeige {start_idx + 1}-{min(end_idx, len(df))} von {len(df)}")
+
+    st.caption("Klicke auf die Checkboxen (egal in welcher Liste), um Einträge für den E-Mail-Versand auszuwählen.")
+
+    # --- Fixierte Pfeil-Navigation (Start/Ende) ---
+    FIXED_NAV_HTML = """
+    <style>
+    .fixed-nav {
+        position: fixed;
+        bottom: 1.5rem;
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: var(--secondary-background-color);
+        border: 1px solid var(--border-color, var(--gray-300));
+        border-radius: 25px;
+        padding: 0.5rem 1rem;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        z-index: 9999;
+        opacity: 0.9;
+    }
+    html.dark .fixed-nav {
+         border: 1px solid var(--border-color, var(--gray-800));
+    }
+    .fixed-nav a {
+        display: inline-block;
+        text-decoration: none;
+        color: var(--text-color);
+        font-size: 1.25rem;
+        margin: 0 0.75rem;
+        transition: transform 0.1s ease-in-out;
+    }
+    .fixed-nav a:hover {
+        transform: scale(1.2);
+        color: var(--primary-color);
+    }
+    </style>
+    
+    <div class="fixed-nav">
+        <a href="#results_top" title="Zum Anfang der Liste">⬆️</a>
+        <a href="#actions_bottom" title="Zum E-Mail Versand">⬇️</a>
+    </div>
+    """
+    st.markdown(FIXED_NAV_HTML, unsafe_allow_html=True)
+
+    # --- Keyboard Shortcuts (G / Shift+G) ---
+    components.html(
+        """
+        <script>
+        document.addEventListener('keydown', function(e) {
+          if (e.key === 'g' && !e.shiftKey) {
+            window.location.hash = '#results_top';
+          }
+          if (e.key === 'G' || (e.key === 'g' && e.shiftKey)) {
+            window.location.hash = '#actions_bottom';
+          }
+        });
+        </script>
+        """,
+        height=0,
+    )
+    st.caption("Shortcuts: `g` zum Anfang, `Shift+g` zum E-Mail-Versand.")
+
+    # --- Ergebnis-Loop (paged) ---
+    for i, (_, r) in enumerate(df_page.iterrows(), start=start_idx + 1):
+        render_row_ui(r, str(i))
 
     st.markdown("---")
-    st.caption("Klicke auf die Checkboxen (egal in welcher Liste), um Einträge für den E-Mail-Versand auszuwählen.")
 
     # --- KORREKTUR 2 (Sync-Fix): Logik für "Alle auswählen/abwählen" ---
     # Wir müssen *vor* den Buttons eine Map aller DOIs und Keys erstellen.
@@ -1452,53 +2460,59 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
             st.rerun()
             # --- ENDE KORREKTUR 4 ---
     
-    st.markdown("---") # Visueller Trenner
-    # --- NEU: Fixierte Pfeil-Navigation (Start/Ende) ---
-    FIXED_NAV_HTML = """
-    <style>
-    .fixed-nav {
-        position: fixed;
-        bottom: 1.5rem; /* Abstand von unten */
-        left: 50%;
-        transform: translateX(-50%); /* Zentrierung */
-        background-color: var(--secondary-background-color);
-        border: 1px solid var(--border-color, var(--gray-300));
-        border-radius: 25px; /* Pillenform */
-        padding: 0.5rem 1rem;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        z-index: 9999; /* Über allem anderen */
-        opacity: 0.9; /* Leichte Transparenz */
-    }
-    /* Fallback für Darkmode-Rand */
-    html.dark .fixed-nav {
-         border: 1px solid var(--border-color, var(--gray-800));
-    }
-    .fixed-nav a {
-        display: inline-block;
-        text-decoration: none;
-        color: var(--text-color);
-        font-size: 1.25rem; /* Größere Pfeile */
-        margin: 0 0.75rem;
-        transition: transform 0.1s ease-in-out;
-    }
-    .fixed-nav a:hover {
-        transform: scale(1.2);
-        color: var(--primary-color); /* Akzentfarbe beim Hover */
-    }
-    </style>
-    
-    <div class="fixed-nav">
-        <a href="#results_top" title="Zum Anfang der Liste">⬆️</a>
-        <a href="#actions_bottom" title="Zum E-Mail Versand">⬇️</a>
-    </div>
-    """
-    st.markdown(FIXED_NAV_HTML, unsafe_allow_html=True)
-    # --- ENDE NEU ---
-    
-    # --- Ergebnis-Loop (Neue Karten v2) ---
-    for i, (_, r) in enumerate(df.iterrows(), start=1):
-        render_row_ui(r, str(i))
-            
+    qa_cols = st.columns([1, 1, 1])
+    with qa_cols[0]:
+        quick_n = st.slider("Quick-Pick Anzahl", min_value=5, max_value=50, value=10, step=5, key="quick_pick_n")
+    with qa_cols[1]:
+        if st.button("Top Relevanz hinzufügen", use_container_width=True):
+            if "relevance_score" in df.columns:
+                top = df.sort_values("relevance_score", ascending=False).head(quick_n)
+                st.session_state["selected_dois"] |= set(top["doi"].astype(str).str.lower())
+                st.rerun()
+            else:
+                st.warning("Bitte zuerst Relevanz berechnen.")
+    with qa_cols[2]:
+        if st.button("Neueste hinzufügen", use_container_width=True):
+            temp = df.copy()
+            temp["_issued_dt"] = temp.get("issued", "").astype(str).apply(_safe_parse_date)
+            top = temp.sort_values("_issued_dt", ascending=False).head(quick_n)
+            st.session_state["selected_dois"] |= set(top["doi"].astype(str).str.lower())
+            st.rerun()
+
+    collections_open, collections_body = section_card(
+        "📁 Collections",
+        "Gruppiere ausgewählte Papers in benannten Sammlungen für spätere Arbeit.",
+        "exp_collections",
+    )
+    if collections_open:
+        with collections_body:
+            col_cols = st.columns([2, 1, 1])
+            with col_cols[0]:
+                col_name = st.text_input("Collection-Name", value="")
+            with col_cols[1]:
+                if st.button("Zur Collection hinzufügen", use_container_width=True):
+                    if not col_name.strip():
+                        st.warning("Bitte einen Collection-Namen angeben.")
+                    elif not st.session_state["selected_dois"]:
+                        st.warning("Bitte zuerst DOIs auswählen.")
+                    else:
+                        coll = st.session_state["collections"].get(col_name.strip(), set())
+                        coll = set(coll) | set(st.session_state["selected_dois"])
+                        st.session_state["collections"][col_name.strip()] = coll
+                        st.success(f"{len(st.session_state['selected_dois'])} DOI(s) hinzugefügt.")
+            with col_cols[2]:
+                if st.session_state["collections"]:
+                    if st.button("Alle Collections löschen", use_container_width=True):
+                        st.session_state["collections"] = {}
+                        st.success("Collections gelöscht.")
+
+            if st.session_state["collections"]:
+                for name, doi_set in st.session_state["collections"].items():
+                    with st.expander(f"📁 {name} ({len(doi_set)})", expanded=False):
+                        sub_df = df[df["doi"].astype(str).str.lower().isin({d.lower() for d in doi_set})]
+                        for r_idx, (_, row) in enumerate(sub_df.iterrows()):
+                            render_row_ui(row, f"coll_{name}_{r_idx}")
+
     st.divider()
     # --- NEU: Link "Hoch" und Anker "Unten" ---
     st.markdown(
@@ -1524,94 +2538,101 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
     # --- ENDE NEU ---
 
     # --- Download & E-Mail (neu gruppiert) ---
-    st.subheader("🏁 Aktionen: Download & Versand")
+    actions_open, actions_body = section_card(
+        "🏁 Aktionen: Download & Versand",
+        "Exportiere Ergebnisse oder sende DOI-Listen per E-Mail.",
+        "exp_actions",
+        default_open=True,
+        show_toggle=False,
+    )
+    if actions_open:
+        with actions_body:
+            dl_col, mail_col = st.columns(2)
 
-    dl_col, mail_col = st.columns(2)
+            with dl_col:
+                st.markdown("#### ⬇️ Download")
+                def df_to_excel_bytes(df_in: pd.DataFrame) -> BytesIO | None:
+                    engine = _pick_excel_engine()
+                    if engine is None: return None
+                    out = BytesIO()
+                    with pd.ExcelWriter(out, engine=engine) as writer:
+                        df_in.to_excel(writer, index=False, sheet_name="results")
+                    out.seek(0)
+                    return out
 
-    with dl_col:
-        st.markdown("#### ⬇️ Download")
-        def df_to_excel_bytes(df_in: pd.DataFrame) -> BytesIO | None:
-            engine = _pick_excel_engine()
-            if engine is None: return None
-            out = BytesIO()
-            with pd.ExcelWriter(out, engine=engine) as writer:
-                df_in.to_excel(writer, index=False, sheet_name="results")
-            out.seek(0)
-            return out
+                def _df_to_csv_bytes(df_in: pd.DataFrame) -> BytesIO:
+                    b = BytesIO()
+                    b.write(df_in.to_csv(index=False).encode("utf-8"))
+                    b.seek(0)
+                    return b
 
-        def _df_to_csv_bytes(df_in: pd.DataFrame) -> BytesIO:
-            b = BytesIO()
-            b.write(df_in.to_csv(index=False).encode("utf-8"))
-            b.seek(0)
-            return b
-
-        x_all = df_to_excel_bytes(df)
-        if x_all is not None:
-            st.download_button(
-                "Excel — alle Ergebnisse",
-                data=x_all,
-                file_name="paperscout_results.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        else:
-            st.download_button(
-                "CSV — alle Ergebnisse",
-                data=_df_to_csv_bytes(df),
-                file_name="paperscout_results.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-
-        if st.session_state["selected_dois"]:
-            df_sel = df[df["doi"].astype(str).str.lower().isin(st.session_state["selected_dois"])].copy()
-            x_sel = df_to_excel_bytes(df_sel)
-            if x_sel is not None:
-                st.download_button(
-                    f"Excel — {len(st.session_state['selected_dois'])} ausgewählte",
-                    data=x_sel,
-                    file_name="paperscout_selected.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            else:
-                 st.download_button(
-                    f"CSV — {len(st.session_state['selected_dois'])} ausgewählte",
-                    data=_df_to_csv_bytes(df_sel),
-                    file_name="paperscout_selected.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-        else:
-            st.button("Excel — nur ausgewählte", disabled=True, use_container_width=True)
-
-
-    with mail_col:
-        st.markdown("#### 📧 DOI-Liste senden")
-        with st.container(border=True):
-            sender_display = st.text_input(
-                "Absendername (z.B. Naomi oder Ralf)",
-                value="",
-            )
-            to_email = st.text_input("Empfänger-E-Mail-Adresse", key="doi_email_to")
-            
-            if st.button("DOI-Liste senden", use_container_width=True, type="primary"):
-                if not st.session_state["selected_dois"]:
-                    st.warning("Bitte wähle mindestens eine DOI aus.")
-                elif not to_email or "@" not in to_email:
-                    st.warning("Bitte gib eine gültige E-Mail-Adresse ein.")
-                else:
-                    # Ausgewählte DOIs (lowercase)
-                    sel_dois = st.session_state["selected_dois"]
-                    df_sel = df[df["doi"].astype(str).str.lower().isin(sel_dois)].copy()
-                    records = df_sel.to_dict(orient="records")
-
-                    ok, msg = send_doi_email(
-                        to_email,
-                        records,
-                        sender_display=sender_display.strip() or None
+                x_all = df_to_excel_bytes(df)
+                if x_all is not None:
+                    st.download_button(
+                        "Excel — alle Ergebnisse",
+                        data=x_all,
+                        file_name="paperscout_results.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
                     )
-                    st.success(msg) if ok else st.error(msg)
+                else:
+                    st.download_button(
+                        "CSV — alle Ergebnisse",
+                        data=_df_to_csv_bytes(df),
+                        file_name="paperscout_results.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
+
+                if st.session_state["selected_dois"]:
+                    df_sel = df[df["doi"].astype(str).str.lower().isin(st.session_state["selected_dois"])].copy()
+                    x_sel = df_to_excel_bytes(df_sel)
+                    if x_sel is not None:
+                        st.download_button(
+                            f"Excel — {len(st.session_state['selected_dois'])} ausgewählte",
+                            data=x_sel,
+                            file_name="paperscout_selected.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True
+                        )
+                    else:
+                         st.download_button(
+                            f"CSV — {len(st.session_state['selected_dois'])} ausgewählte",
+                            data=_df_to_csv_bytes(df_sel),
+                            file_name="paperscout_selected.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+                else:
+                    st.button("Excel — nur ausgewählte", disabled=True, use_container_width=True)
+
+
+            with mail_col:
+                st.markdown("#### 📧 DOI-Liste senden")
+                with st.container(border=True):
+                    sender_display = st.text_input(
+                        "Absendername (z.B. Naomi oder Ralf)",
+                        value="",
+                    )
+                    to_email = st.text_input("Empfänger-E-Mail-Adresse", key="doi_email_to")
+                    
+                    if st.button("DOI-Liste senden", use_container_width=True, type="primary"):
+                        if not st.session_state["selected_dois"]:
+                            st.warning("Bitte wähle mindestens eine DOI aus.")
+                        elif not to_email or "@" not in to_email:
+                            st.warning("Bitte gib eine gültige E-Mail-Adresse ein.")
+                        else:
+                            # Ausgewählte DOIs (lowercase)
+                            sel_dois = st.session_state["selected_dois"]
+                            df_sel = df[df["doi"].astype(str).str.lower().isin(sel_dois)].copy()
+                            records = df_sel.to_dict(orient="records")
+
+                            ok, msg = send_doi_email(
+                                to_email,
+                                records,
+                                sender_display=sender_display.strip() or None
+                            )
+                            st.success(msg) if ok else st.error(msg)
 
 else:
-    st.info("Noch keine Ergebnisse geladen. Wähle Journals und klicke auf „Let’s go!“")
+    st.info("Noch keine Ergebnisse geladen. Wähle Journals im Command Center und starte den Run.")
