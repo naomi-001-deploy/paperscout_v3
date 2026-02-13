@@ -994,41 +994,43 @@ def compute_relevance_scores_multi(
 def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or "issued" not in df.columns:
         return df
-    dates = []
-    for d in df["issued"].astype(str).tolist():
-        dt = _safe_parse_date(d)
-        dates.append(dt)
-    valid_dates = [d for d in dates if d]
+
+    dates = [_safe_parse_date(str(x)) for x in df["issued"].astype(str).tolist()]
+    valid_dates = [d for d in dates if d is not None]
     if not valid_dates:
         return df
+
     ref_date = max(valid_dates)
+
     days_ago = []
     for d in dates:
-        if not d:
+        if d is None:
             days_ago.append(None)
         else:
             days_ago.append((ref_date - d).days)
-    non_null_days = [d for d in days_ago if d is not None]
+
+    non_null_days = [int(d) for d in days_ago if d is not None]
     max_days = max(non_null_days or [0])
+    denominator = max(max_days, 1)  # garantiert > 0
+
     recency_scores = []
-    if max_days <= 0:
-        # Alle datierten Einträge liegen auf dem gleichen Tag (oder es gibt keine Datumswerte).
-        # Dann erhält jeder datierte Eintrag 100 Punkte und wir teilen nie durch 0.
-        for d in days_ago:
-            recency_scores.append(100.0 if d is not None else 0.0)
-    else:
-        for d in days_ago:
-            if d is None:
-                recency_scores.append(0.0)
-            else:
-                recency_scores.append(round((1 - (d / max_days)) * 100, 1))
+    for d in days_ago:
+        if d is None:
+            recency_scores.append(0.0)
+        else:
+            d_val = max(int(d), 0)
+            recency_scores.append(round((1 - (d_val / denominator)) * 100, 1))
+
     df["days_ago"] = days_ago
+
     if "relevance_score" in df.columns:
-        rel = df["relevance_score"].fillna(0.0)
-        df["signal_score"] = (rel * 0.6 + pd.Series(recency_scores) * 0.4).round(1)
+        rel = pd.to_numeric(df["relevance_score"], errors="coerce").fillna(0.0)
+        df["signal_score"] = (rel * 0.6 + pd.Series(recency_scores, index=df.index) * 0.4).round(1)
     else:
-        df["signal_score"] = pd.Series(recency_scores).round(1)
+        df["signal_score"] = pd.Series(recency_scores, index=df.index).round(1)
+
     return df
+
 
 
 # =========================
