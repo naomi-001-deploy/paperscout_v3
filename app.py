@@ -1001,28 +1001,18 @@ def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     ref_date = max(valid_dates)
+    days_ago = [(ref_date - d).days if d is not None else None for d in dates]
 
-    days_ago = []
-    for d in dates:
-        if d is None:
-            days_ago.append(None)
-        else:
-            days_ago.append((ref_date - d).days)
-
-    non_null_days = [int(d) for d in days_ago if d is not None]
-    max_days = max(non_null_days or [0])
-    denominator = max(max_days, 1)  # garantiert > 0
+    denominator = max(max([d for d in days_ago if d is not None] or [0]), 1)
 
     recency_scores = []
     for d in days_ago:
         if d is None:
             recency_scores.append(0.0)
         else:
-            d_val = max(int(d), 0)
-            recency_scores.append(round((1 - (d_val / denominator)) * 100, 1))
+            recency_scores.append(round((1 - (d / denominator)) * 100, 1))
 
     df["days_ago"] = days_ago
-
     if "relevance_score" in df.columns:
         rel = pd.to_numeric(df["relevance_score"], errors="coerce").fillna(0.0)
         df["signal_score"] = (rel * 0.6 + pd.Series(recency_scores, index=df.index) * 0.4).round(1)
@@ -1030,6 +1020,7 @@ def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
         df["signal_score"] = pd.Series(recency_scores, index=df.index).round(1)
 
     return df
+
 
 
 
