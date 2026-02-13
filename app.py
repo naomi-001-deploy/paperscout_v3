@@ -1008,16 +1008,20 @@ def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
             days_ago.append(None)
         else:
             days_ago.append((ref_date - d).days)
-    max_days = max([d for d in days_ago if d is not None] or [0])
-    # Wenn alle Treffer auf dem Referenztag liegen, wäre max_days == 0.
-    # Dann normalisieren wir mit 1, um Division durch 0 zu vermeiden.
-    denominator = max(max_days, 1)
+    non_null_days = [d for d in days_ago if d is not None]
+    max_days = max(non_null_days or [0])
     recency_scores = []
-    for d in days_ago:
-        if d is None:
-            recency_scores.append(0.0)
-        else:
-            recency_scores.append(round((1 - (d / denominator)) * 100, 1))
+    if max_days <= 0:
+        # Alle datierten Einträge liegen auf dem gleichen Tag (oder es gibt keine Datumswerte).
+        # Dann erhält jeder datierte Eintrag 100 Punkte und wir teilen nie durch 0.
+        for d in days_ago:
+            recency_scores.append(100.0 if d is not None else 0.0)
+    else:
+        for d in days_ago:
+            if d is None:
+                recency_scores.append(0.0)
+            else:
+                recency_scores.append(round((1 - (d / max_days)) * 100, 1))
     df["days_ago"] = days_ago
     if "relevance_score" in df.columns:
         rel = df["relevance_score"].fillna(0.0)
