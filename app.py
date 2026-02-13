@@ -1008,13 +1008,16 @@ def add_signal_scores(df: pd.DataFrame) -> pd.DataFrame:
             days_ago.append(None)
         else:
             days_ago.append((ref_date - d).days)
-    max_days = max([d for d in days_ago if d is not None] or [1])
+    max_days = max([d for d in days_ago if d is not None] or [0])
+    # Wenn alle Treffer auf dem Referenztag liegen, wäre max_days == 0.
+    # Dann normalisieren wir mit 1, um Division durch 0 zu vermeiden.
+    denominator = max(max_days, 1)
     recency_scores = []
     for d in days_ago:
         if d is None:
             recency_scores.append(0.0)
         else:
-            recency_scores.append(round((1 - (d / max_days)) * 100, 1))
+            recency_scores.append(round((1 - (d / denominator)) * 100, 1))
     df["days_ago"] = days_ago
     if "relevance_score" in df.columns:
         rel = df["relevance_score"].fillna(0.0)
@@ -1145,32 +1148,111 @@ st.markdown(
     """
     <style>
     :root {
-        --ps-bg: radial-gradient(1200px 700px at 10% -10%, #ffe8c7 0%, rgba(255,232,199,0.0) 55%),
-                 radial-gradient(900px 600px at 90% 0%, #d8f0ff 0%, rgba(216,240,255,0.0) 55%),
-                 linear-gradient(180deg, #f7f3ef 0%, #f3f6f9 45%, #f7f7fb 100%);
-        --ps-ink: #101217;
-        --ps-ink-2: #3a3f4b;
-        --ps-ink-3: #6a7282;
-        --ps-accent: #ff6b35;
-        --ps-accent-2: #2d7ff9;
-        --ps-card: rgba(255,255,255,0.7);
-        --ps-card-border: rgba(16,18,23,0.08);
-        --ps-shadow: 0 12px 30px rgba(16,18,23,0.12);
+        --ps-bg: radial-gradient(1100px 600px at 8% -10%, #fff1d6 0%, rgba(255,241,214,0.0) 60%),
+                 radial-gradient(900px 600px at 92% 0%, #e2f1ff 0%, rgba(226,241,255,0.0) 60%),
+                 linear-gradient(180deg, #fff9f2 0%, #f9fbff 50%, #fffdf8 100%);
+        --ps-ink: #0b1b3a;
+        --ps-ink-2: #122a55;
+        --ps-ink-3: #1d3a6e;
+        --ps-accent: #cb2f98;
+        --ps-accent-2: #5e3de3;
+        --ps-accent-text: #9a1f76;
+        --ps-link: #0f53d1;
+        --ps-focus: #ffb703;
+        --ps-on-accent: #ffffff;
+        --ps-on-accent-2: #ffffff;
+        --ps-card: rgba(255,255,255,0.96);
+        --ps-card-border: rgba(11,27,58,0.10);
+        --ps-shadow: 0 14px 30px rgba(11,27,58,0.12);
+        --ps-control-bg: rgba(255,255,255,0.96);
+        --ps-control-bg-hover: rgba(255,255,255,1.0);
+        --ps-control-border: rgba(12,42,96,0.28);
+        --ps-detail-bg: rgba(242,248,255,0.92);
+        --ps-nav-bg: rgba(255,255,255,0.95);
+        --ps-hero-start: rgba(255,255,255,0.92);
+        --ps-hero-end: rgba(238,248,255,0.82);
+    }
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --ps-bg: radial-gradient(1150px 680px at 14% -8%, #3e2b8f 0%, rgba(62,43,143,0.0) 58%),
+                     radial-gradient(980px 660px at 88% 0%, #1b4d98 0%, rgba(27,77,152,0.0) 60%),
+                     linear-gradient(180deg, #15193e 0%, #1b1f4c 50%, #131736 100%);
+            --ps-ink: #f7f8ff;
+            --ps-ink-2: #dbe1ff;
+            --ps-ink-3: #bec8ff;
+            --ps-accent: #cf2ca1;
+            --ps-accent-2: #5a38e2;
+            --ps-accent-text: #ff7cdf;
+            --ps-link: #7edbff;
+            --ps-focus: #ffd86a;
+            --ps-on-accent: #f9fbff;
+            --ps-on-accent-2: #ffffff;
+            --ps-card: rgba(26,30,79,0.92);
+            --ps-card-border: rgba(133,173,255,0.48);
+            --ps-shadow: 0 18px 38px rgba(14,11,44,0.62);
+            --ps-control-bg: rgba(31,35,89,0.9);
+            --ps-control-bg-hover: rgba(40,46,109,0.95);
+            --ps-control-border: rgba(141,190,255,0.56);
+            --ps-detail-bg: rgba(34,39,97,0.82);
+            --ps-nav-bg: rgba(22,27,70,0.96);
+            --ps-hero-start: rgba(60,42,141,0.93);
+            --ps-hero-end: rgba(193,46,151,0.66);
+        }
+    }
+    html[data-theme="dark"] {
+        --ps-bg: radial-gradient(1150px 680px at 14% -8%, #3e2b8f 0%, rgba(62,43,143,0.0) 58%),
+                 radial-gradient(980px 660px at 88% 0%, #1b4d98 0%, rgba(27,77,152,0.0) 60%),
+                 linear-gradient(180deg, #15193e 0%, #1b1f4c 50%, #131736 100%);
+        --ps-ink: #f7f8ff;
+        --ps-ink-2: #dbe1ff;
+        --ps-ink-3: #bec8ff;
+        --ps-accent: #cf2ca1;
+        --ps-accent-2: #5a38e2;
+        --ps-accent-text: #ff7cdf;
+        --ps-link: #7edbff;
+        --ps-focus: #ffd86a;
+        --ps-on-accent: #f9fbff;
+        --ps-on-accent-2: #ffffff;
+        --ps-card: rgba(26,30,79,0.92);
+        --ps-card-border: rgba(133,173,255,0.48);
+        --ps-shadow: 0 18px 38px rgba(14,11,44,0.62);
+        --ps-control-bg: rgba(31,35,89,0.9);
+        --ps-control-bg-hover: rgba(40,46,109,0.95);
+        --ps-control-border: rgba(141,190,255,0.56);
+        --ps-detail-bg: rgba(34,39,97,0.82);
+        --ps-nav-bg: rgba(22,27,70,0.96);
+        --ps-hero-start: rgba(60,42,141,0.93);
+        --ps-hero-end: rgba(193,46,151,0.66);
     }
     @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Manrope:wght@400;500;600&display=swap');
     html, body, [class*="stApp"] {
         background: var(--ps-bg);
         color: var(--ps-ink);
         font-family: 'Manrope', sans-serif;
+        line-height: 1.55;
     }
     h1, h2, h3, h4, h5 {
         font-family: 'Space Grotesk', sans-serif;
         letter-spacing: -0.02em;
     }
+    a, .stMarkdown a {
+        color: var(--ps-link);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        text-decoration-thickness: 1.5px;
+    }
+    a:hover, .stMarkdown a:hover {
+        color: var(--ps-accent-text);
+    }
+    *:focus-visible {
+        outline: 3px solid var(--ps-focus) !important;
+        outline-offset: 2px !important;
+        border-radius: 8px;
+    }
     .ps-hero {
         border-radius: 18px;
         padding: 1.4rem 1.6rem;
-        background: linear-gradient(135deg, rgba(255,255,255,0.85), rgba(255,255,255,0.6));
+        background: linear-gradient(135deg, var(--ps-hero-start), var(--ps-hero-end));
         border: 1px solid var(--ps-card-border);
         box-shadow: var(--ps-shadow);
         margin-bottom: 1rem;
@@ -1191,29 +1273,59 @@ st.markdown(
     }
     .stButton > button {
         border-radius: 12px;
-        border: 1px solid var(--ps-card-border);
-        background: linear-gradient(180deg, #ffffff, #f3f6fb);
-        box-shadow: 0 6px 14px rgba(16,18,23,0.08);
-        transition: transform 0.12s ease, box-shadow 0.12s ease;
+        border: 1px solid var(--ps-control-border);
+        background: var(--ps-control-bg);
+        color: var(--ps-ink);
+        box-shadow: 0 8px 18px rgba(6,34,88,0.2);
+        transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+        font-weight: 600;
     }
     .stButton > button:hover {
         transform: translateY(-1px);
-        box-shadow: 0 10px 20px rgba(16,18,23,0.12);
+        background: var(--ps-control-bg-hover);
+        box-shadow: 0 12px 24px rgba(6,34,88,0.28);
     }
     .stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, var(--ps-accent), #ff9f2e);
-        color: #fff;
-        border: none;
+        background: linear-gradient(135deg, var(--ps-accent), var(--ps-accent-2));
+        color: var(--ps-on-accent);
+        border: 1px solid rgba(176,147,255,0.66);
+        box-shadow: 0 12px 24px rgba(95,56,226,0.35);
     }
     .stTextInput input, .stTextArea textarea, .stNumberInput input, .stSelectbox select, .stMultiSelect div {
         border-radius: 12px !important;
-        border: 1px solid var(--ps-card-border) !important;
-        background: rgba(255,255,255,0.85) !important;
+        border: 1px solid var(--ps-control-border) !important;
+        background: var(--ps-control-bg) !important;
+        color: var(--ps-ink) !important;
+    }
+    .stTextInput input::placeholder,
+    .stTextArea textarea::placeholder,
+    .stNumberInput input::placeholder {
+        color: var(--ps-ink-3) !important;
+        opacity: 1 !important;
+    }
+    .stTabs [aria-selected="true"] {
+        color: var(--ps-ink) !important;
+        border-bottom: 3px solid var(--ps-accent-text) !important;
+    }
+    /* Checkbox labels (mobile-safe, BaseWeb) */
+    div[data-baseweb="checkbox"] * {
+        color: var(--ps-ink) !important;
+    }
+    div[data-baseweb="checkbox"] label span {
+        color: var(--ps-ink) !important;
+    }
+    @media (prefers-color-scheme: dark) {
+        div[data-baseweb="checkbox"] * {
+            color: var(--ps-ink) !important;
+        }
+    }
+    html[data-theme="dark"] div[data-baseweb="checkbox"] * {
+        color: var(--ps-ink) !important;
     }
     .stExpander {
         border-radius: 14px;
         border: 1px solid var(--ps-card-border);
-        background: rgba(255,255,255,0.7);
+        background: var(--ps-card);
     }
     </style>
     """,
@@ -1263,7 +1375,7 @@ CARD_STYLE_V3 = """
     }
     .result-card:hover {
         transform: translateY(-3px);
-        box-shadow: 0 18px 35px rgba(16,18,23,0.16);
+        box-shadow: 0 18px 35px rgba(6,34,88,0.32);
     }
     .result-card h3 {
         color: var(--ps-ink);
@@ -1287,7 +1399,7 @@ CARD_STYLE_V3 = """
     .result-card details summary {
         cursor: pointer;
         font-weight: 700;
-        color: var(--ps-accent);
+        color: var(--ps-accent-text);
         font-size: 0.95rem;
         list-style-type: '✦ ';
     }
@@ -1295,7 +1407,7 @@ CARD_STYLE_V3 = """
         list-style-type: '▾ ';
     }
     .result-card details > div {
-        background: rgba(255,255,255,0.8);
+        background: var(--ps-detail-bg);
         border-radius: 10px;
         padding: 0.75rem 1rem;
         margin-top: 0.6rem;
@@ -1309,7 +1421,7 @@ CARD_STYLE_V3 = """
     }
     .result-card details a {
         color: var(--ps-accent-2);
-        text-decoration: none;
+        text-decoration: underline;
         font-weight: 600;
     }
     .result-card details a:hover {
@@ -1317,12 +1429,12 @@ CARD_STYLE_V3 = """
     }
 
     .cluster-card {
-        background: rgba(255,255,255,0.7);
+        background: var(--ps-detail-bg);
         padding: 12px;
         border-radius: 12px;
         margin-bottom: 10px;
         border: 1px solid var(--ps-card-border);
-        box-shadow: 0 6px 12px rgba(16,18,23,0.08);
+        box-shadow: 0 8px 16px rgba(6,34,88,0.2);
     }
     .ps-chip {
         display: inline-block;
@@ -1331,18 +1443,19 @@ CARD_STYLE_V3 = """
         font-size: 0.72rem;
         font-weight: 700;
         background: var(--ps-accent-2);
-        color: #fff;
+        color: var(--ps-on-accent-2);
         margin-left: 0.35rem;
     }
     .ps-chip.hot {
         background: var(--ps-accent);
+        color: var(--ps-on-accent-2);
     }
     .ps-callout {
         display: inline-block;
         padding: 0.18rem 0.6rem;
         border-radius: 999px;
-        background: linear-gradient(135deg, var(--ps-accent), #ff9f2e);
-        color: #fff;
+        background: linear-gradient(135deg, var(--ps-accent), var(--ps-accent-2));
+        color: var(--ps-on-accent);
         font-size: 0.72rem;
         font-weight: 700;
         margin-bottom: 0.4rem;
@@ -1741,7 +1854,11 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
                 margin-bottom: 1rem;
             }
             .link-container a {
-                text-decoration: none;
+                text-decoration: underline;
+                text-decoration-thickness: 1.5px;
+                text-underline-offset: 2px;
+                color: var(--ps-link);
+                font-weight: 700;
                 font-size: 0.9rem;
             }
         </style>
@@ -2373,28 +2490,26 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
         bottom: 1.5rem;
         left: 50%;
         transform: translateX(-50%);
-        background-color: var(--secondary-background-color);
-        border: 1px solid var(--border-color, var(--gray-300));
+        background-color: var(--ps-nav-bg);
+        border: 1px solid var(--ps-control-border);
         border-radius: 25px;
         padding: 0.5rem 1rem;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        box-shadow: 0 10px 24px rgba(6,34,88,0.28);
         z-index: 9999;
-        opacity: 0.9;
-    }
-    html.dark .fixed-nav {
-         border: 1px solid var(--border-color, var(--gray-800));
+        opacity: 1;
     }
     .fixed-nav a {
         display: inline-block;
-        text-decoration: none;
-        color: var(--text-color);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        color: var(--ps-ink);
         font-size: 1.25rem;
         margin: 0 0.75rem;
         transition: transform 0.1s ease-in-out;
     }
     .fixed-nav a:hover {
         transform: scale(1.2);
-        color: var(--primary-color);
+        color: var(--ps-accent-text);
     }
     </style>
     
@@ -2523,7 +2638,11 @@ if "results_df" in st.session_state and not st.session_state["results_df"].empty
                 margin-bottom: -1.5rem;
             }
             .link-container-bottom a {
-                text-decoration: none;
+                text-decoration: underline;
+                text-decoration-thickness: 1.5px;
+                text-underline-offset: 2px;
+                color: var(--ps-link);
+                font-weight: 700;
                 font-size: 0.9rem;
             }
         </style>
