@@ -1548,12 +1548,20 @@ CARD_STYLE_V3 = """
         gap: 0.8rem;
         margin: 0.35rem 0 0.55rem 0;
     }
+    .owner-grid-form {
+        margin: 0;
+    }
     .owner-grid-link {
         display: block;
+        width: 100%;
+        text-align: left;
+        cursor: pointer;
+        font-family: 'Manrope', sans-serif;
         border: 2px solid var(--ps-control-border);
         border-radius: 14px;
         padding: 0.85rem 0.9rem;
         background: transparent;
+        color: var(--ps-ink);
         text-decoration: none !important;
         box-shadow: 0 8px 18px rgba(6,34,88,0.14);
         transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
@@ -1638,10 +1646,13 @@ for person in PERSON_JOURNALS.keys():
     active_css = " active" if active_owner == person else ""
     owner_cards.append(
         (
-            f"<a class='owner-grid-link{active_css}' href='?owner={quote_plus(person)}'>"
+            "<form class='owner-grid-form' method='get'>"
+            f"<input type='hidden' name='owner' value='{html.escape(person)}' />"
+            f"<button class='owner-grid-link{active_css}' type='submit'>"
             f"<div class='owner-grid-title'>{html.escape(person)}</div>"
             f"<div class='owner-grid-meta'>{count} Journals</div>"
-            "</a>"
+            "</button>"
+            "</form>"
         )
     )
 st.markdown(f"<div class='owner-grid'>{''.join(owner_cards)}</div>", unsafe_allow_html=True)
