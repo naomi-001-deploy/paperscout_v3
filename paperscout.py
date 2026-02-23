@@ -1542,15 +1542,27 @@ CARD_STYLE_V3 = """
         font-weight: 700;
         margin-bottom: 0.4rem;
     }
-    .owner-grid-card {
+    .owner-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 0.8rem;
+        margin: 0.35rem 0 0.55rem 0;
+    }
+    .owner-grid-link {
+        display: block;
         border: 2px solid var(--ps-control-border);
         border-radius: 14px;
         padding: 0.85rem 0.9rem;
         background: transparent;
-        margin-bottom: 0.4rem;
+        text-decoration: none !important;
         box-shadow: 0 8px 18px rgba(6,34,88,0.14);
+        transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
     }
-    .owner-grid-card.active {
+    .owner-grid-link:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 12px 24px rgba(6,34,88,0.2);
+    }
+    .owner-grid-link.active {
         border-color: rgba(176,147,255,0.66);
         box-shadow: 0 12px 24px rgba(95,56,226,0.28);
     }
@@ -1561,7 +1573,7 @@ CARD_STYLE_V3 = """
         color: var(--ps-ink);
         line-height: 1.2;
     }
-    .owner-grid-card.active .owner-grid-title {
+    .owner-grid-link.active .owner-grid-title {
         color: var(--ps-accent-text);
     }
     .owner-grid-meta {
@@ -1579,20 +1591,6 @@ def _apply_person_journal_selection(person: str, all_journals: List[str]) -> Non
     for j in all_journals:
         st.session_state[_chk_key(j)] = j in selected
     st.session_state["chosen_journals"] = [j for j in all_journals if j in selected]
-
-
-def _render_person_card(person: str, selected: bool) -> None:
-    css = "owner-grid-card active" if selected else "owner-grid-card"
-    count = len(PERSON_JOURNALS.get(person, []))
-    st.markdown(
-        (
-            f"<div class='{css}'>"
-            f"<div class='owner-grid-title'>{html.escape(person)}</div>"
-            f"<div class='owner-grid-meta'>{count} Journals</div>"
-            "</div>"
-        ),
-        unsafe_allow_html=True,
-    )
 
 
 # --- Command Center (ohne Tabs) ---
@@ -1620,21 +1618,34 @@ if "preset_to_apply" in st.session_state:
 if "journal_owner_input" not in st.session_state:
     st.session_state["journal_owner_input"] = ""
 
+query_owner = ""
+try:
+    query_owner = str(st.query_params.get("owner", "")).strip()
+except Exception:
+    query_owner = ""
+
+if query_owner in PERSON_JOURNALS and query_owner != st.session_state.get("journal_owner_input"):
+    st.session_state["journal_owner_input"] = query_owner
+    _apply_person_journal_selection(query_owner, journals)
+    st.session_state["journal_owner_applied"] = query_owner
+
 st.markdown("## Journal-Profil")
 st.caption("Wähle dein Profil per Klick auf die Kachel. Die passenden Journals werden automatisch vorausgewählt.")
-person_cols = st.columns(len(PERSON_JOURNALS))
-for idx, person in enumerate(PERSON_JOURNALS.keys()):
-    is_active = st.session_state.get("journal_owner_input") == person
-    with person_cols[idx]:
-        _render_person_card(person, is_active)
-        btn_text = "Ausgewählt" if is_active else "Auswählen"
-        if st.button(btn_text, key=f"pick_owner_{person}", use_container_width=True):
-            st.session_state["journal_owner_input"] = person
-            _apply_person_journal_selection(person, journals)
-            st.session_state["journal_owner_applied"] = person
-            st.rerun()
-
+owner_cards = []
 active_owner = st.session_state.get("journal_owner_input", "")
+for person in PERSON_JOURNALS.keys():
+    count = len(PERSON_JOURNALS.get(person, []))
+    active_css = " active" if active_owner == person else ""
+    owner_cards.append(
+        (
+            f"<a class='owner-grid-link{active_css}' href='?owner={quote_plus(person)}'>"
+            f"<div class='owner-grid-title'>{html.escape(person)}</div>"
+            f"<div class='owner-grid-meta'>{count} Journals</div>"
+            "</a>"
+        )
+    )
+st.markdown(f"<div class='owner-grid'>{''.join(owner_cards)}</div>", unsafe_allow_html=True)
+
 if active_owner in PERSON_JOURNALS:
     st.caption(f"Aktiv: {active_owner} ({len(PERSON_JOURNALS[active_owner])} Journals vorausgewählt)")
 
