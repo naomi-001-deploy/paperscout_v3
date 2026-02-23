@@ -312,30 +312,57 @@ def _trend_summary(df: pd.DataFrame, recent_days: int = 30) -> Dict[str, Any]:
 CR_BASE = "https://api.crossref.org"
 
 JOURNAL_ISSN: Dict[str, str] = {
-    "The Leadership Quarterly": "1048-9843",
-    "Human Relations": "0018-7267",
-    "Organization Studies": "0170-8406",
-    "Organizational Research Methods": "1094-4281",
-    "Journal of Leadership and Organizational Studies": "1939-7089",
-    "Journal of Organizational Behavior": "0894-3796",
-    "Journal of Management Studies": "0022-2380",
-    "Personnel Psychology": "0031-5826",
-    "European Management Review": "1740-4754",
-    "Organization Science": "1047-7039",
-    "Management Science": "0025-1909",
+    "Academy of Management Annals": "1941-6520",
+    "Academy of Management Discoveries": "2168-1007",
     "Academy of Management Journal": "0001-4273",
-    "Zeitschrift für Arbeits- und Organisationspsychologie": "0932-4089",
-    "Journal of Applied Psychology": "0021-9010",
-    "Journal of Personality and Social Psychology": "0022-3514",
-    "Journal of Occupational Health Psychology": "1076-8998",
-    "Journal of Management": "0149-2063",
-    "Strategic Management Journal": "0143-2095",
-
-    # NEU:
-    "Science": "0036-8075",
-    "Nature": "0028-0836",
+    "Academy of Management Learning & Education": "1537-260X",
+    "Academy of Management Perspectives": "1558-9080",
+    "Academy of Management Review": "0363-7425",
     "Administrative Science Quarterly": "0001-8392",
+    "Applied Psychology: An International Review": "0269-994X",
+    "Behavioral and Brain Sciences": "0140-525X",
+    "Cognition and Emotion": "0269-9931",
+    "Current Directions in Psychological Science": "0963-7214",
+    "Current Opinion in Behavioral Sciences": "2352-1546",
+    "Decision": "2325-9965",
+    "European Journal of Psychology": "1841-0413",
+    "European Journal of Social Psychology": "0046-2772",
+    "European Management Review": "1740-4754",
+    "Games": "2073-4336",
+    "Human Relations": "0018-7267",
+    "Journal of Applied Psychology": "0021-9010",
+    "Journal of Behavioral and Experimental Economics": "2214-8043",
+    "Journal of Behavioral Decision Making": "0894-3257",
+    "Journal of Economic Behavior & Organization": "0167-2681",
+    "Journal of Economic Psychology": "0167-4870",
+    "Journal of Experimental Social Psychology": "0022-1031",
+    "Journal of Leadership and Organizational Studies": "1548-0518",
+    "Journal of Management": "0149-2063",
+    "Journal of Management Education": "1052-5629",
+    "Journal of Management Studies": "0022-2380",
+    "Journal of Occupational Health Psychology": "1076-8998",
+    "Journal of Organizational Behavior": "0894-3796",
+    "Journal of Personality and Social Psychology": "0022-3514",
+    "Journal of Research in Personality": "0092-6566",
+    "Management Science": "0025-1909",
     "Management Teaching Review": "2379-2981",
+    "Motivation and Emotion": "0146-7239",
+    "Nature": "0028-0836",
+    "Organization Science": "1047-7039",
+    "Organization Studies": "0170-8406",
+    "Organizational Behavior and Human Decision Processes": "0749-5978",
+    "Organizational Research Methods": "1094-4281",
+    "Personality and Social Psychology Bulletin": "0146-1672",
+    "Personnel Psychology": "0031-5826",
+    "Psychological Science": "0956-7976",
+    "Review of General Psychology": "1089-2680",
+    "Science": "0036-8075",
+    "Social Cognition": "0278-016X",
+    "Social Science Research": "0049-089X",
+    "Strategic Management Journal": "0143-2095",
+    "The Leadership Quarterly": "1048-9843",
+    "Wirtschaftspsychologie": "1615-7729",
+    "Zeitschrift für Arbeits- und Organisationspsychologie": "0932-4089",
 }
 
 ALT_ISSN: Dict[str, List[str]] = {
@@ -351,11 +378,69 @@ ALT_ISSN: Dict[str, List[str]] = {
     "Academy of Management Journal": ["1948-0989"],
     "The Leadership Quarterly": ["1873-3409"],
     "Organizational Research Methods": ["1552-7425"],
-
-    # NEU:
     "Science": ["1095-9203"],
     "Nature": ["1476-4687"],
     "Administrative Science Quarterly": ["1930-3815"],
+}
+
+PERSON_JOURNALS: Dict[str, List[str]] = {
+    "Ralf": [
+        "Academy of Management Annals",
+        "Academy of Management Discoveries",
+        "Academy of Management Journal",
+        "Academy of Management Learning & Education",
+        "Academy of Management Perspectives",
+        "Academy of Management Review",
+        "Administrative Science Quarterly",
+        "European Management Review",
+        "Human Relations",
+        "Journal of Applied Psychology",
+        "Journal of Economic Psychology",
+        "Journal of Leadership and Organizational Studies",
+        "Journal of Management",
+        "Journal of Management Studies",
+        "Journal of Occupational Health Psychology",
+        "Journal of Organizational Behavior",
+        "Journal of Personality and Social Psychology",
+        "Management Science",
+        "Management Teaching Review",
+        "Nature",
+        "Organization Science",
+        "Organization Studies",
+        "Organizational Behavior and Human Decision Processes",
+        "Organizational Research Methods",
+        "Personnel Psychology",
+        "Science",
+        "Strategic Management Journal",
+        "The Leadership Quarterly",
+    ],
+    "Thomas": [
+        "Applied Psychology: An International Review",
+        "Behavioral and Brain Sciences",
+        "Cognition and Emotion",
+        "Current Directions in Psychological Science",
+        "Current Opinion in Behavioral Sciences",
+        "Decision",
+        "European Journal of Psychology",
+        "European Journal of Social Psychology",
+        "Games",
+        "Journal of Behavioral and Experimental Economics",
+        "Journal of Behavioral Decision Making",
+        "Journal of Economic Behavior & Organization",
+        "Journal of Economic Psychology",
+        "Journal of Experimental Social Psychology",
+        "Journal of Personality and Social Psychology",
+        "Journal of Research in Personality",
+        "Management Science",
+        "Motivation and Emotion",
+        "Organizational Behavior and Human Decision Processes",
+        "Personality and Social Psychology Bulletin",
+        "Psychological Science",
+        "Review of General Psychology",
+        "Social Cognition",
+        "Social Science Research",
+        "Wirtschaftspsychologie",
+    ],
 }
 
 def fetch_crossref_any(journal: str, issn: str, since: str, until: str, rows: int, query: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -1462,6 +1547,13 @@ CARD_STYLE_V3 = """
 st.markdown(CARD_STYLE_V3, unsafe_allow_html=True)
 
 
+def _apply_person_journal_selection(person: str, all_journals: List[str]) -> None:
+    selected = set(PERSON_JOURNALS.get(person, []))
+    for j in all_journals:
+        st.session_state[_chk_key(j)] = j in selected
+    st.session_state["chosen_journals"] = [j for j in all_journals if j in selected]
+
+
 # --- Command Center (ohne Tabs) ---
 journals = sorted(JOURNAL_ISSN.keys())
 today = date.today()
@@ -1483,6 +1575,18 @@ if "preset_to_apply" in st.session_state:
         st.session_state["topic_query_input"] = preset.get("topic_query", "")
         st.session_state["relevance_query_input"] = preset.get("relevance_query", "")
         st.session_state["brief_lang"] = preset.get("brief_lang", "Deutsch")
+
+st.markdown("## Journal-Profil")
+selected_person = st.selectbox(
+    "Name auswählen (automatische Vorauswahl)",
+    options=["Bitte auswählen", "Ralf", "Thomas"],
+    key="journal_owner_input",
+)
+if st.session_state.get("journal_owner_applied") != selected_person:
+    if selected_person in PERSON_JOURNALS:
+        _apply_person_journal_selection(selected_person, journals)
+        st.info(f"{len(PERSON_JOURNALS[selected_person])} Journal(s) für {selected_person} wurden vorausgewählt.")
+    st.session_state["journal_owner_applied"] = selected_person
 
 st.markdown("## Command Center")
 
