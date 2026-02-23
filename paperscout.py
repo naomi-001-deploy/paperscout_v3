@@ -1656,7 +1656,7 @@ with st.expander("🎯 Ziel & Fokus", expanded=True):
             height=120,
             key="relevance_query_input",
         )
-        st.caption("Wenn ausgefüllt, werden Ergebnisse automatisch nach Relevanz bewertet und ein Briefing erzeugt.")
+        st.caption("Wenn ausgefüllt, werden Ergebnisse automatisch nach Relevanz sortiert und ein kurzes Briefing erzeugt.")
         st.selectbox("Briefing-Sprache", ["Deutsch", "English"], index=0, key="brief_lang")
 
 with st.expander("💾 Gespeicherte Suchen", expanded=False):
