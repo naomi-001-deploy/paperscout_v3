@@ -341,6 +341,7 @@ JOURNAL_ISSN: Dict[str, str] = {
     "Journal of Management Education": "1052-5629",
     "Journal of Management Studies": "0022-2380",
     "Journal of Occupational Health Psychology": "1076-8998",
+    "Journal of Occupational and Organizational Psychology": "0963-1798",
     "Journal of Organizational Behavior": "0894-3796",
     "Journal of Personality and Social Psychology": "0022-3514",
     "Journal of Research in Personality": "0092-6566",
@@ -361,6 +362,7 @@ JOURNAL_ISSN: Dict[str, str] = {
     "Social Science Research": "0049-089X",
     "Strategic Management Journal": "0143-2095",
     "The Leadership Quarterly": "1048-9843",
+    "Work & Stress": "0267-8373",
     "Wirtschaftspsychologie": "1615-7729",
     "Zeitschrift für Arbeits- und Organisationspsychologie": "0932-4089",
 }
@@ -370,6 +372,7 @@ ALT_ISSN: Dict[str, List[str]] = {
     "Journal of Personality and Social Psychology": ["1939-1315"],
     "Journal of Leadership and Organizational Studies": ["1939-7089"],
     "Journal of Occupational Health Psychology": ["1939-1307"],
+    "Journal of Occupational and Organizational Psychology": ["2044-8325"],
     "Journal of Management": ["1557-1211"],
     "Human Relations": ["1741-282X"],
     "Personnel Psychology": ["1744-6570"],
@@ -377,6 +380,7 @@ ALT_ISSN: Dict[str, List[str]] = {
     "European Management Review": ["1740-4762"],
     "Academy of Management Journal": ["1948-0989"],
     "The Leadership Quarterly": ["1873-3409"],
+    "Work & Stress": ["1464-5335"],
     "Organizational Research Methods": ["1552-7425"],
     "Science": ["1095-9203"],
     "Nature": ["1476-4687"],
@@ -384,6 +388,20 @@ ALT_ISSN: Dict[str, List[str]] = {
 }
 
 PERSON_JOURNALS: Dict[str, List[str]] = {
+    "Itala": [
+        "Applied Psychology: An International Review",
+        "Human Relations",
+        "Journal of Applied Psychology",
+        "Journal of Leadership and Organizational Studies",
+        "Journal of Management",
+        "Journal of Occupational and Organizational Psychology",
+        "Journal of Organizational Behavior",
+        "Organization Science",
+        "Organization Studies",
+        "Personnel Psychology",
+        "The Leadership Quarterly",
+        "Work & Stress",
+    ],
     "Ralf": [
         "Academy of Management Annals",
         "Academy of Management Discoveries",
