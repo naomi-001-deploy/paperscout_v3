@@ -413,32 +413,10 @@ ALT_ISSN: Dict[str, List[str]] = {
 }
 
 PERSON_JOURNALS: Dict[str, List[str]] = {
-    "Karola": [
-        "Academy of Management Learning & Education", "Academy of Management Perspectives", "Academy of Management Review",
-        "Applied Psychology: An International Review", "Behavioral and Brain Sciences", "Cognition and Emotion",
-        "Current Directions in Psychological Science", "European Journal of Psychology", "European Journal of Social Psychology",
-        "Health Psychology", "International Journal of Coaching Psychology", "International Journal of Social Robotics",
-        "Journal of Applied Psychology", "Journal of Consulting and Clinical Psychology", "Journal of Consumer Psychology",
-        "Journal of Economic Psychology", "Journal of Experimental Psychology - Human Perception and Performance",
-        "Journal of Experimental Social Psychology", "Journal of Occupational Health Psychology",
-        "Journal of Personality and Social Psychology", "Journal of Research in Personality", "Management Teaching Review",
-        "Motivation and Emotion", "Nature", "Personality and Social Psychology Bulletin", "Review of General Psychology",
-        "Social Cognition", "The Journal of Positive Psychology", "Wirtschaftspsychologie", "Work & Stress",
-    ],
     "Bernd": [
         "ACM Transactions on Computer-Human Interaction", "ACM Transactions on Human-Robot Interaction",
         "IEEE Transactions on Robotics", "International Journal of Human-Computer Interaction",
         "International Journal of Robotics Research", "Telematics and Informatics",
-    ],
-    "Jochen": [
-        "Academy of Management Journal", "Academy of Management Review", "Applied Psychology: An International Review",
-        "Current Directions in Psychological Science", "Current Opinion in Behavioral Sciences", "European Journal of Health Psychology",
-        "European Journal of Social Psychology", "Journal of Applied Psychology",
-        "Journal of Behavioral and Experimental Economics", "Journal of Behavioral Decision Making",
-        "Journal of Economic Behavior & Organization", "Journal of Management",
-        "Journal of Occupational and Organizational Psychology", "Journal of Occupational Health Psychology",
-        "Journal of Organizational Behavior", "Management Science", "Motivation and Emotion", "Nature", "Organization Studies",
-        "Personnel Psychology", "The Leadership Quarterly", "Work & Stress",
     ],
     "Itala": [
         "Applied Psychology: An International Review",
@@ -453,6 +431,28 @@ PERSON_JOURNALS: Dict[str, List[str]] = {
         "Personnel Psychology",
         "The Leadership Quarterly",
         "Work & Stress",
+    ],
+        "Jochen": [
+        "Academy of Management Journal", "Academy of Management Review", "Applied Psychology: An International Review",
+        "Current Directions in Psychological Science", "Current Opinion in Behavioral Sciences", "European Journal of Health Psychology",
+        "European Journal of Social Psychology", "Journal of Applied Psychology",
+        "Journal of Behavioral and Experimental Economics", "Journal of Behavioral Decision Making",
+        "Journal of Economic Behavior & Organization", "Journal of Management",
+        "Journal of Occupational and Organizational Psychology", "Journal of Occupational Health Psychology",
+        "Journal of Organizational Behavior", "Management Science", "Motivation and Emotion", "Nature", "Organization Studies",
+        "Personnel Psychology", "The Leadership Quarterly", "Work & Stress",
+    ],
+        "Karola": [
+        "Academy of Management Learning & Education", "Academy of Management Perspectives", "Academy of Management Review",
+        "Applied Psychology: An International Review", "Behavioral and Brain Sciences", "Cognition and Emotion",
+        "Current Directions in Psychological Science", "European Journal of Psychology", "European Journal of Social Psychology",
+        "Health Psychology", "International Journal of Coaching Psychology", "International Journal of Social Robotics",
+        "Journal of Applied Psychology", "Journal of Consulting and Clinical Psychology", "Journal of Consumer Psychology",
+        "Journal of Economic Psychology", "Journal of Experimental Psychology - Human Perception and Performance",
+        "Journal of Experimental Social Psychology", "Journal of Occupational Health Psychology",
+        "Journal of Personality and Social Psychology", "Journal of Research in Personality", "Management Teaching Review",
+        "Motivation and Emotion", "Nature", "Personality and Social Psychology Bulletin", "Review of General Psychology",
+        "Social Cognition", "The Journal of Positive Psychology", "Wirtschaftspsychologie", "Work & Stress",
     ],
     "Ralf": [
         "Academy of Management Annals",
