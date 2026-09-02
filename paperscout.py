@@ -422,7 +422,6 @@ PERSON_JOURNALS: Dict[str, List[str]] = {
         "Journal of Personality and Social Psychology",
         "Management Science",
         "Management Teaching Review",
-        "Nature",
         "Organization Science",
         "Organization Studies",
         "Organizational Behavior and Human Decision Processes",
